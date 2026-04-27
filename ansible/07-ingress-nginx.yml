@@ -1,0 +1,63 @@
+---
+# 07-ingress-nginx.yml
+# Инсталира ingress-nginx чрез Helm
+# Получава external IP от MetalLB
+#
+# Usage: ansible-playbook -i inventory.ini 07-ingress-nginx.yml
+
+- name: Install Helm and ingress-nginx
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  environment:
+    KUBECONFIG: /home/parallels/.kube/config
+
+  tasks:
+
+    # ─── Helm ────────────────────────────────────────────────────────────────
+    - name: Check if Helm is installed
+      command: which helm
+      register: helm_check
+      ignore_errors: true
+      changed_when: false
+
+    - name: Install Helm
+      become: true
+      shell: |
+        curl -fsSL https://raw.githubusercontent.com/helm/helm/main/scripts/get-helm-3 | bash
+      when: helm_check.rc != 0
+
+    - name: Add ingress-nginx Helm repo
+      command: helm repo add ingress-nginx https://kubernetes.github.io/ingress-nginx
+      register: repo_add
+      changed_when: "'already exists' not in repo_add.stdout"
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    # ─── ingress-nginx ────────────────────────────────────────────────────────
+    - name: Install ingress-nginx
+      command: >
+        helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx
+        --namespace ingress-nginx
+        --create-namespace
+        --set controller.service.type=LoadBalancer
+        --set controller.replicaCount=2
+        --set controller.nodeSelector."kubernetes\.io/os"=linux
+        --wait --timeout 5m
+      register: nginx_install
+
+    - name: Wait for ingress-nginx external IP
+      command: >
+        kubectl get svc ingress-nginx-controller
+        -n ingress-nginx
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: nginx_ip
+      retries: 20
+      delay: 10
+      until: nginx_ip.stdout != ""
+
+    - name: Show ingress-nginx IP
+      debug:
+        msg: "ingress-nginx LoadBalancer IP: {{ nginx_ip.stdout }}"

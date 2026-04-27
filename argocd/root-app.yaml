@@ -1,0 +1,28 @@
+# App-of-Apps — root application
+# Тази Application казва на ArgoCD да наблюдава argocd/apps/ директорията
+# и автоматично да синхронизира всички Application манифести в нея.
+#
+# Приложи: kubectl apply -f argocd/root-app.yaml
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: root-app
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    # Смени с твоето GitHub repo след push
+    repoURL: https://github.com/ТВОЕТО_USERNAME/platform_eng.git
+    targetRevision: main
+    path: argocd/apps
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: argocd
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

@@ -1,0 +1,15 @@
+# Terraform state и sensitive файлове — никога в git
+terraform.tfstate
+terraform.tfstate.backup
+terraform.tfstate.d/
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+
+# Ansible generated files
+ansible/inventory.ini
+ansible/join-commands.txt
+
+# SSH ключове
+*.pem
+*.key

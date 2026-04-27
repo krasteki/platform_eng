@@ -1,0 +1,107 @@
+---
+# 03-control-init.yml
+# Инициализира Kubernetes control plane на control-01
+# Генерира kubeadm join командите за останалите nodes
+#
+# Usage: ansible-playbook -i inventory.ini 03-control-init.yml
+
+- name: Initialize Kubernetes control plane (control-01)
+  hosts: control_plane[0]
+  become: true
+  gather_facts: true
+
+  tasks:
+
+    - name: Check if cluster already initialized
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_admin_conf
+
+    - name: Pull kubeadm images
+      command: kubeadm config images pull
+      when: not k8s_admin_conf.stat.exists
+
+    - name: Initialize cluster with kubeadm
+      command: >
+        kubeadm init
+        --control-plane-endpoint="{{ lb_ip }}:{{ lb_port }}"
+        --upload-certs
+        --pod-network-cidr={{ pod_cidr }}
+        --service-cidr={{ service_cidr }}
+      register: kubeadm_init_output
+      when: not k8s_admin_conf.stat.exists
+
+    - name: Save kubeadm init output
+      copy:
+        content: "{{ kubeadm_init_output.stdout }}"
+        dest: /root/kubeadm-init.log
+      when: kubeadm_init_output is changed
+
+    - name: Create .kube directory for parallels user
+      file:
+        path: /home/parallels/.kube
+        state: directory
+        owner: parallels
+        group: parallels
+        mode: "0755"
+
+    - name: Copy admin.conf for parallels user
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/parallels/.kube/config
+        remote_src: true
+        owner: parallels
+        group: parallels
+        mode: "0600"
+
+    - name: Install Flannel CNI
+      become: false
+      command: kubectl apply -f {{ flannel_manifest }}
+      environment:
+        KUBECONFIG: /home/parallels/.kube/config
+
+    - name: Wait for control plane to be ready
+      become: false
+      command: kubectl get nodes
+      environment:
+        KUBECONFIG: /home/parallels/.kube/config
+      register: nodes_output
+      retries: 20
+      delay: 15
+      until: nodes_output.rc == 0
+
+    # ─── Extract join tokens ─────────────────────────────────────────────────
+    - name: Get certificate key for control plane join
+      command: kubeadm init phase upload-certs --upload-certs
+      register: cert_key_output
+
+    - name: Set certificate key fact
+      set_fact:
+        kubeadm_cert_key: "{{ cert_key_output.stdout_lines[-1] }}"
+
+    - name: Generate control plane join command
+      command: kubeadm token create --print-join-command
+      register: join_command_output
+
+    - name: Set join command facts (shared with other plays)
+      set_fact:
+        kubeadm_join_command: "{{ join_command_output.stdout }}"
+        kubeadm_cert_key: "{{ kubeadm_cert_key }}"
+        cacheable: true
+
+    - name: Save join command to file
+      copy:
+        content: |
+          # Worker join:
+          {{ join_command_output.stdout }}
+
+          # Control plane join (add --control-plane --certificate-key <key>):
+          {{ join_command_output.stdout }} --control-plane --certificate-key {{ kubeadm_cert_key }}
+        dest: /root/join-commands.txt
+        mode: "0600"
+
+    - name: Fetch join commands to local machine
+      fetch:
+        src: /root/join-commands.txt
+        dest: "{{ playbook_dir }}/join-commands.txt"
+        flat: true

@@ -1,0 +1,86 @@
+#cloud-config
+# =============================================================================
+# cloud-init/control.yaml — First-boot конфигурация за Control Plane nodes
+# =============================================================================
+#
+# Разлика от lb.yaml:
+#   - Зареждаме kernel модули нужни за Kubernetes (overlay, br_netfilter)
+#   - Задаваме sysctl настройки за K8s networking
+#   - НЕ инсталираме kubeadm тук — Ansible ще го направи (по-контролирано)
+#
+# Защо kernel модули:
+#   - overlay: нужен за containerd (container filesystem layers)
+#   - br_netfilter: нужен за iptables да вижда bridge трафик
+#     (K8s ползва виртуални bridges за pod networking)
+# =============================================================================
+
+hostname: ${hostname}
+fqdn: ${hostname}.k8s.local
+manage_etc_hosts: true
+
+users:
+  - name: ${ssh_user}
+    groups: [sudo, adm]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+write_files:
+  # Статична IP конфигурация
+  - path: /etc/netplan/99-static.yaml
+    permissions: '0600'
+    content: |
+      network:
+        version: 2
+        ethernets:
+          enp0s5:
+            dhcp4: false
+            addresses:
+              - ${ip_address}/24
+            routes:
+              - to: default
+                via: ${gateway}
+            nameservers:
+              addresses: [${dns_server}, 1.1.1.1]
+
+  # Kernel модули — зареждат се при всеки boot
+  - path: /etc/modules-load.d/k8s.conf
+    content: |
+      overlay
+      br_netfilter
+
+  # Kernel параметри за Kubernetes networking
+  # net.bridge.bridge-nf-call-iptables=1 → iptables вижда bridged трафик
+  # net.ipv4.ip_forward=1 → позволява IP forwarding (нужно за pod routing)
+  - path: /etc/sysctl.d/k8s.conf
+    content: |
+      net.bridge.bridge-nf-call-iptables  = 1
+      net.bridge.bridge-nf-call-ip6tables = 1
+      net.ipv4.ip_forward                 = 1
+
+runcmd:
+  - netplan apply
+
+  # Зареди kernel модулите веднага (без reboot)
+  - modprobe overlay
+  - modprobe br_netfilter
+
+  # Приложи sysctl настройките веднага
+  - sysctl --system
+
+  # Базови пакети + Python за Ansible
+  - apt-get update -y
+  - apt-get install -y curl wget git htop python3 python3-pip apt-transport-https ca-certificates gnupg lsb-release
+
+  # Изключи swap — Kubernetes ИЗИСКВА swap да е изключен
+  # Swap кара kubelet да откаже да стартира
+  - swapoff -a
+  - sed -i '/swap/d' /etc/fstab
+
+  - echo "cloud-init done" > /var/log/cloud-init-done.txt
+
+power_state:
+  mode: reboot
+  delay: "+1"
+  message: "Rebooting after cloud-init"

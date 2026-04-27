@@ -1,0 +1,71 @@
+#cloud-config
+# =============================================================================
+# cloud-init/lb.yaml — First-boot конфигурация за Load Balancer VM
+# =============================================================================
+#
+# Какво е cloud-init:
+#   При ПЪРВОТО стартиране на Ubuntu VM, cloud-init чете този файл и
+#   автоматично конфигурира системата. Без него трябва ръчно да SSH-ваш
+#   в всеки VM и да пишеш команди.
+#
+# Важно: cloud-init се изпълнява САМО при първо стартиране.
+#   Ако промениш файла после → трябва terraform destroy + apply.
+#
+# ${...} placeholder-ите се попълват от Terraform чрез templatefile().
+# =============================================================================
+
+# Hostname на VM-а
+hostname: ${hostname}
+fqdn: ${hostname}.k8s.local
+
+# Забраняваме cloud-init да управлява мрежата — ние я задаваме с netplan
+manage_etc_hosts: true
+
+# Добавяме ubuntu потребителя с SSH ключ
+users:
+  - name: ${ssh_user}
+    groups: [sudo, adm]
+    shell: /bin/bash
+    sudo: ["ALL=(ALL) NOPASSWD:ALL"]
+    ssh_authorized_keys:
+      - ${ssh_public_key}
+
+# Статична IP конфигурация чрез netplan
+# Parallels Shared Network → subnet 192.168.64.0/24
+write_files:
+  - path: /etc/netplan/99-static.yaml
+    permissions: '0600'
+    content: |
+      network:
+        version: 2
+        ethernets:
+          enp0s5:
+            dhcp4: false
+            addresses:
+              - ${ip_address}/24
+            routes:
+              - to: default
+                via: ${gateway}
+            nameservers:
+              addresses: [${dns_server}, 1.1.1.1]
+
+# Команди изпълнени при boot
+runcmd:
+  # Приложи netplan конфигурацията
+  - netplan apply
+
+  # Обнови пакети и инсталирай базови инструменти
+  - apt-get update -y
+  - apt-get install -y curl wget git htop python3 python3-pip
+
+  # HAProxy ще се инсталира от Ansible — тук само подготвяме системата
+  - apt-get install -y apt-transport-https ca-certificates
+
+  # Сигнализира cloud-init да не се изпълнява отново
+  - echo "cloud-init done" > /var/log/cloud-init-done.txt
+
+# Рестарт след конфигурацията
+power_state:
+  mode: reboot
+  delay: "+1"
+  message: "Rebooting after cloud-init"

@@ -1,0 +1,86 @@
+---
+# 10-prometheus-stack.yml
+# Инсталира kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+# Grafana достъпна на: https://grafana.k8s.local
+#
+# Usage: ansible-playbook -i inventory.ini 10-prometheus-stack.yml
+
+- name: Install kube-prometheus-stack
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  vars:
+    grafana_hostname: "grafana.k8s.local"
+    grafana_admin_password: "admin123"   # смени в production!
+
+  environment:
+    KUBECONFIG: /home/parallels/.kube/config
+
+  tasks:
+
+    - name: Add prometheus-community Helm repo
+      command: helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+      register: repo_add
+      changed_when: "'already exists' not in repo_add.stdout"
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    - name: Install kube-prometheus-stack
+      command: >
+        helm upgrade --install kube-prometheus-stack prometheus-community/kube-prometheus-stack
+        --namespace monitoring
+        --create-namespace
+        --set grafana.adminPassword={{ grafana_admin_password }}
+        --set grafana.ingress.enabled=true
+        --set grafana.ingress.ingressClassName=nginx
+        --set "grafana.ingress.hosts[0]={{ grafana_hostname }}"
+        --set grafana.ingress.tls[0].secretName=grafana-tls
+        --set "grafana.ingress.tls[0].hosts[0]={{ grafana_hostname }}"
+        --set "grafana.ingress.annotations.cert-manager\.io/cluster-issuer=local-ca-issuer"
+        --set prometheus.prometheusSpec.retention=7d
+        --set kubeControllerManager.endpoints[0]=10.211.55.11
+        --set kubeControllerManager.endpoints[1]=10.211.55.12
+        --set kubeControllerManager.endpoints[2]=10.211.55.13
+        --set kubeScheduler.endpoints[0]=10.211.55.11
+        --set kubeScheduler.endpoints[1]=10.211.55.12
+        --set kubeScheduler.endpoints[2]=10.211.55.13
+        --set kubeEtcd.endpoints[0]=10.211.55.11
+        --set kubeEtcd.endpoints[1]=10.211.55.12
+        --set kubeEtcd.endpoints[2]=10.211.55.13
+        --wait --timeout 10m
+      register: prometheus_install
+
+    - name: Wait for Grafana to be ready
+      command: >
+        kubectl rollout status deployment/kube-prometheus-stack-grafana
+        -n monitoring --timeout=120s
+
+    - name: Get ingress-nginx LoadBalancer IP
+      command: >
+        kubectl get svc ingress-nginx-controller
+        -n ingress-nginx
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: lb_ip
+
+    - name: Grafana access information
+      debug:
+        msg:
+          - "========================================"
+          - "Grafana is ready!"
+          - "URL: https://{{ grafana_hostname }}"
+          - "Username: admin"
+          - "Password: {{ grafana_admin_password }}"
+          - "========================================"
+          - "Add to /etc/hosts on your Mac:"
+          - "{{ lb_ip.stdout }}  {{ grafana_hostname }}"
+          - "========================================"
+
+    - name: Verify monitoring pods
+      command: kubectl get pods -n monitoring
+      register: mon_pods
+
+    - name: Show monitoring pods
+      debug:
+        msg: "{{ mon_pods.stdout_lines }}"

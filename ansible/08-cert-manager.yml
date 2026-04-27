@@ -1,0 +1,86 @@
+---
+# 08-cert-manager.yml
+# Инсталира cert-manager чрез Helm
+# Конфигурира self-signed ClusterIssuer за локална употреба
+#
+# Usage: ansible-playbook -i inventory.ini 08-cert-manager.yml
+
+- name: Install cert-manager
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  vars:
+    cert_manager_version: "v1.14.5"
+
+  environment:
+    KUBECONFIG: /home/parallels/.kube/config
+
+  tasks:
+
+    - name: Add jetstack Helm repo
+      command: helm repo add jetstack https://charts.jetstack.io
+      register: repo_add
+      changed_when: "'already exists' not in repo_add.stdout"
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    - name: Install cert-manager
+      command: >
+        helm upgrade --install cert-manager jetstack/cert-manager
+        --namespace cert-manager
+        --create-namespace
+        --version {{ cert_manager_version }}
+        --set installCRDs=true
+        --wait --timeout 5m
+
+    - name: Wait for cert-manager to be ready
+      command: >
+        kubectl rollout status deployment/cert-manager
+        -n cert-manager --timeout=120s
+
+    - name: Create self-signed ClusterIssuer
+      command: kubectl apply -f -
+      args:
+        stdin: |
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: selfsigned-issuer
+          spec:
+            selfSigned: {}
+
+    - name: Create local CA ClusterIssuer
+      command: kubectl apply -f -
+      args:
+        stdin: |
+          apiVersion: cert-manager.io/v1
+          kind: Certificate
+          metadata:
+            name: local-ca
+            namespace: cert-manager
+          spec:
+            isCA: true
+            commonName: k8s-local-ca
+            secretName: local-ca-secret
+            duration: 87600h  # 10 years
+            issuerRef:
+              name: selfsigned-issuer
+              kind: ClusterIssuer
+          ---
+          apiVersion: cert-manager.io/v1
+          kind: ClusterIssuer
+          metadata:
+            name: local-ca-issuer
+          spec:
+            ca:
+              secretName: local-ca-secret
+
+    - name: Verify cert-manager pods
+      command: kubectl get pods -n cert-manager
+      register: cm_pods
+
+    - name: Show cert-manager pods
+      debug:
+        msg: "{{ cm_pods.stdout_lines }}"

@@ -1,0 +1,72 @@
+---
+# 06-metallb.yml
+# Инсталира MetalLB за LoadBalancer services в локален клъстер
+# IP pool: 10.211.55.200-10.211.55.250 (Parallels Shared Network)
+#
+# Usage: ansible-playbook -i inventory.ini 06-metallb.yml
+
+- name: Install MetalLB
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  vars:
+    metallb_version: "v0.14.5"
+    metallb_ip_pool_start: "10.211.55.200"
+    metallb_ip_pool_end: "10.211.55.250"
+
+  environment:
+    KUBECONFIG: /home/parallels/.kube/config
+
+  tasks:
+
+    - name: Install MetalLB manifest
+      command: >
+        kubectl apply -f
+        https://raw.githubusercontent.com/metallb/metallb/{{ metallb_version }}/config/manifests/metallb-native.yaml
+      register: metallb_apply
+
+    - name: Wait for MetalLB controller to be ready
+      command: >
+        kubectl rollout status deployment/controller
+        -n metallb-system --timeout=120s
+
+    - name: Wait for MetalLB webhook to be ready
+      command: >
+        kubectl rollout status deployment/metallb-webhook
+        -n metallb-system --timeout=60s
+      ignore_errors: true
+
+    - name: Configure MetalLB IPAddressPool
+      command: kubectl apply -f -
+      args:
+        stdin: |
+          apiVersion: metallb.io/v1beta1
+          kind: IPAddressPool
+          metadata:
+            name: local-pool
+            namespace: metallb-system
+          spec:
+            addresses:
+              - {{ metallb_ip_pool_start }}-{{ metallb_ip_pool_end }}
+
+    - name: Configure MetalLB L2Advertisement
+      command: kubectl apply -f -
+      args:
+        stdin: |
+          apiVersion: metallb.io/v1beta1
+          kind: L2Advertisement
+          metadata:
+            name: local-l2
+            namespace: metallb-system
+          spec:
+            ipAddressPools:
+              - local-pool
+
+    - name: Verify MetalLB pods
+      command: kubectl get pods -n metallb-system
+      register: metallb_pods
+
+    - name: Show MetalLB pods
+      debug:
+        msg: "{{ metallb_pods.stdout_lines }}"

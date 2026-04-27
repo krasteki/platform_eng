@@ -1,0 +1,90 @@
+---
+# 09-argocd.yml
+# Инсталира ArgoCD чрез Helm
+# Конфигурира Ingress с TLS (cert-manager local-ca-issuer)
+#
+# Usage: ansible-playbook -i inventory.ini 09-argocd.yml
+
+- name: Install ArgoCD
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  vars:
+    argocd_version: "7.3.4"   # Helm chart version
+    argocd_hostname: "argocd.k8s.local"
+
+  environment:
+    KUBECONFIG: /home/parallels/.kube/config
+
+  tasks:
+
+    - name: Add ArgoCD Helm repo
+      command: helm repo add argo https://argoproj.github.io/argo-helm
+      register: repo_add
+      changed_when: "'already exists' not in repo_add.stdout"
+
+    - name: Update Helm repos
+      command: helm repo update
+
+    - name: Install ArgoCD
+      command: >
+        helm upgrade --install argocd argo/argo-cd
+        --namespace argocd
+        --create-namespace
+        --version {{ argocd_version }}
+        --set server.service.type=ClusterIP
+        --set server.ingress.enabled=true
+        --set server.ingress.ingressClassName=nginx
+        --set "server.ingress.hosts[0]={{ argocd_hostname }}"
+        --set server.ingress.tls[0].secretName=argocd-server-tls
+        --set "server.ingress.tls[0].hosts[0]={{ argocd_hostname }}"
+        --set server.ingress.annotations."cert-manager\.io/cluster-issuer"=local-ca-issuer
+        --set configs.params."server\.insecure"=false
+        --wait --timeout 10m
+
+    - name: Wait for ArgoCD server to be ready
+      command: >
+        kubectl rollout status deployment/argocd-server
+        -n argocd --timeout=180s
+
+    - name: Get ArgoCD initial admin password
+      command: >
+        kubectl get secret argocd-initial-admin-secret
+        -n argocd
+        -o jsonpath='{.data.password}'
+      register: argocd_password_b64
+
+    - name: Decode ArgoCD password
+      command: "base64 -d"
+      args:
+        stdin: "{{ argocd_password_b64.stdout }}"
+      register: argocd_password
+
+    - name: Get ingress-nginx LoadBalancer IP
+      command: >
+        kubectl get svc ingress-nginx-controller
+        -n ingress-nginx
+        -o jsonpath='{.status.loadBalancer.ingress[0].ip}'
+      register: lb_external_ip
+
+    - name: ArgoCD access information
+      debug:
+        msg:
+          - "========================================"
+          - "ArgoCD is ready!"
+          - "URL: https://{{ argocd_hostname }}"
+          - "Username: admin"
+          - "Password: {{ argocd_password.stdout }}"
+          - "========================================"
+          - "Add to /etc/hosts on your Mac:"
+          - "{{ lb_external_ip.stdout }}  {{ argocd_hostname }}"
+          - "========================================"
+
+    - name: Verify all ArgoCD pods
+      command: kubectl get pods -n argocd
+      register: argocd_pods
+
+    - name: Show ArgoCD pods
+      debug:
+        msg: "{{ argocd_pods.stdout_lines }}"

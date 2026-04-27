@@ -1,0 +1,65 @@
+---
+# 05-static-ips.yml
+# Конфигурира статични IP адреси на всички VM-и чрез Netplan
+# Изпълнява се ПРЕДИ или след клонирането, докато VM-ите са достъпни
+# (ако са достъпни само по DHCP, трябва да update inventory.ini с DHCP IPs)
+#
+# Usage: ansible-playbook -i inventory.ini 05-static-ips.yml
+
+- name: Configure static IPs via Netplan
+  hosts: all
+  become: true
+  gather_facts: true
+
+  vars:
+    static_ips:
+      "k8s-lb":          "10.211.55.10"
+      "k8s-control-01":  "10.211.55.11"
+      "k8s-control-02":  "10.211.55.12"
+      "k8s-control-03":  "10.211.55.13"
+      "k8s-worker-01":   "10.211.55.21"
+      "k8s-worker-02":   "10.211.55.22"
+      "k8s-worker-03":   "10.211.55.23"
+
+  tasks:
+
+    - name: Detect primary network interface
+      shell: ip route | grep default | awk '{print $5}' | head -1
+      register: iface
+      changed_when: false
+
+    - name: Write Netplan static IP config
+      copy:
+        dest: /etc/netplan/01-static.yaml
+        content: |
+          network:
+            version: 2
+            renderer: networkd
+            ethernets:
+              {{ iface.stdout }}:
+                dhcp4: no
+                addresses:
+                  - {{ static_ips[ansible_hostname] }}/24
+                routes:
+                  - to: default
+                    via: 10.211.55.1
+                nameservers:
+                  addresses:
+                    - 8.8.8.8
+                    - 1.1.1.1
+        mode: "0600"
+
+    - name: Disable existing DHCP netplan configs
+      shell: |
+        for f in /etc/netplan/*.yaml; do
+          [ "$f" = "/etc/netplan/01-static.yaml" ] && continue
+          mv "$f" "$f.bak"
+        done
+      args:
+        executable: /bin/bash
+
+    - name: Apply Netplan (connection may drop)
+      command: netplan apply
+      async: 5
+      poll: 0
+      ignore_errors: true

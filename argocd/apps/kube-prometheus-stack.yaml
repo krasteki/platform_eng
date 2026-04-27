@@ -1,0 +1,63 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: kube-prometheus-stack
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://prometheus-community.github.io/helm-charts
+    chart: kube-prometheus-stack
+    targetRevision: "58.*"
+    helm:
+      values: |
+        grafana:
+          # Паролата се взима от K8s Secret "grafana-admin-secret"
+          # kubectl create secret generic grafana-admin-secret \
+          #   --from-literal=admin-password=admin123 \
+          #   --namespace monitoring
+          admin:
+            existingSecret: grafana-admin-secret
+            userKey: admin-user
+            passwordKey: admin-password
+          ingress:
+            enabled: true
+            ingressClassName: nginx
+            hosts:
+              - grafana.k8s.local
+            tls:
+              - secretName: grafana-tls
+                hosts:
+                  - grafana.k8s.local
+            annotations:
+              cert-manager.io/cluster-issuer: local-ca-issuer
+        prometheus:
+          prometheusSpec:
+            retention: 7d
+        kubeControllerManager:
+          endpoints:
+            - 10.211.55.11
+            - 10.211.55.12
+            - 10.211.55.13
+        kubeScheduler:
+          endpoints:
+            - 10.211.55.11
+            - 10.211.55.12
+            - 10.211.55.13
+        kubeEtcd:
+          endpoints:
+            - 10.211.55.11
+            - 10.211.55.12
+            - 10.211.55.13
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: monitoring
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

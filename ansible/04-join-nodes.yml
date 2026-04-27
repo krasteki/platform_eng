@@ -1,0 +1,102 @@
+---
+# 04-join-nodes.yml
+# Присъединява control-02/03 и всички workers към клъстера
+#
+# Usage: ansible-playbook -i inventory.ini 04-join-nodes.yml
+
+# ─── Join additional control plane nodes ─────────────────────────────────────
+- name: Join control-02 and control-03 to cluster
+  hosts: control_plane[1:]
+  become: true
+  gather_facts: false
+  serial: 1
+
+  tasks:
+
+    - name: Check if already joined
+      stat:
+        path: /etc/kubernetes/admin.conf
+      register: k8s_conf
+
+    - name: Read join commands from file
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      slurp:
+        src: /root/join-commands.txt
+      register: join_commands_b64
+      when: not k8s_conf.stat.exists
+
+    - name: Parse control plane join command
+      set_fact:
+        cp_join_cmd: "{{ (join_commands_b64.content | b64decode).split('\n') | select('match', '^kubeadm join.*--control-plane') | first }}"
+      when: not k8s_conf.stat.exists
+
+    - name: Join as control plane node
+      command: "{{ cp_join_cmd }}"
+      when: not k8s_conf.stat.exists
+
+    - name: Create .kube directory
+      file:
+        path: /home/parallels/.kube
+        state: directory
+        owner: parallels
+        group: parallels
+        mode: "0755"
+
+    - name: Copy admin.conf
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /home/parallels/.kube/config
+        remote_src: true
+        owner: parallels
+        group: parallels
+        mode: "0600"
+
+# ─── Join workers ─────────────────────────────────────────────────────────────
+- name: Join worker nodes to cluster
+  hosts: workers
+  become: true
+  gather_facts: false
+
+  tasks:
+
+    - name: Check if already joined
+      stat:
+        path: /etc/kubernetes/kubelet.conf
+      register: kubelet_conf
+
+    - name: Read join commands from file
+      delegate_to: "{{ groups['control_plane'][0] }}"
+      slurp:
+        src: /root/join-commands.txt
+      register: join_commands_b64
+      when: not kubelet_conf.stat.exists
+
+    - name: Parse worker join command
+      set_fact:
+        worker_join_cmd: "{{ (join_commands_b64.content | b64decode).split('\n') | select('match', '^kubeadm join(?!.*--control-plane)') | first }}"
+      when: not kubelet_conf.stat.exists
+
+    - name: Join as worker node
+      command: "{{ worker_join_cmd }}"
+      when: not kubelet_conf.stat.exists
+
+# ─── Verify cluster ───────────────────────────────────────────────────────────
+- name: Verify all nodes are Ready
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  tasks:
+
+    - name: Wait for all 6 nodes to be Ready
+      command: kubectl get nodes --no-headers
+      environment:
+        KUBECONFIG: /home/parallels/.kube/config
+      register: nodes
+      retries: 30
+      delay: 20
+      until: nodes.stdout_lines | select('search', 'Ready') | list | length == 6
+
+    - name: Show cluster nodes
+      debug:
+        msg: "{{ nodes.stdout_lines }}"
