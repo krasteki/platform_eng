@@ -13,8 +13,7 @@ metadata:
 spec:
   project: platform
   source:
-    # Смени с твоето GitHub repo след push
-    repoURL: https://github.com/ТВОЕТО_USERNAME/platform_eng.git
+    repoURL: https://github.com/krasteki/platform_eng.git
     targetRevision: main
     path: argocd/apps
   destination:
