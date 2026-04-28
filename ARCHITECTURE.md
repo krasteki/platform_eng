@@ -1,332 +1,247 @@
 # FinPulse — Platform Engineering Architecture
 
-> Local Kubernetes Platform с GitOps, CI/CD, Observability  
-> Stack: Parallels · Terraform · Ansible · Kubernetes · ArgoCD · GitHub Actions · Prometheus/Grafana
+> **Local Kubernetes Platform** built with GitOps, CI/CD, Secrets Management, and full Observability  
+> **Stack:** Parallels · Terraform · Ansible · Kubernetes (HA) · ArgoCD · GitHub Actions · Vault · Prometheus · Grafana · Loki
 
 ---
 
-## Architecture Diagram
+## High-Level Architecture
 
-```
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                          DEVELOPER MACHINE (Mac M3)                         │
-│                                                                             │
-│  ┌──────────────┐    ┌──────────────────┐    ┌───────────────────────────┐ │
-│  │  VS Code /   │    │   Terraform      │    │   Ansible                 │ │
-│  │  Git         │    │   (null_resource │    │   (10 playbooks)          │ │
-│  │              │    │    + prlctl)     │    │   01-prereqs              │ │
-│  └──────┬───────┘    └────────┬─────────┘    │   02-haproxy              │ │
-│         │ git push            │ prlctl clone │   03-control-init         │ │
-│         │                     │              │   04-join-nodes           │ │
-│         ▼                     ▼              │   06-metallb              │ │
-│  ┌──────────────────────────────────────┐    │   07-ingress-nginx        │ │
-│  │         Parallels Desktop Pro        │    │   08-cert-manager         │ │
-│  │                                      │    │   09-argocd               │ │
-│  │  k8s-lb         10.211.55.10         │    │   10-prometheus-stack     │ │
-│  │  k8s-control-01 10.211.55.11  ┐      │    └───────────────────────────┘ │
-│  │  k8s-control-02 10.211.55.12  ├─HA   │                                  │
-│  │  k8s-control-03 10.211.55.13  ┘      │                                  │
-│  │  k8s-worker-01  10.211.55.21  ┐      │                                  │
-│  │  k8s-worker-02  10.211.55.22  ├─ Work│                                  │
-│  │  k8s-worker-03  10.211.55.23  ┘      │                                  │
-│  └──────────────────────────────────────┘                                  │
-└─────────────────────────────────────────────────────────────────────────────┘
+```mermaid
+graph TB
+    subgraph DEV["👨‍💻 Developer Machine — Mac M3 (64GB)"]
+        VSCODE["VS Code / Git"]
+        TF["Terraform\nnull_resource + prlctl"]
+        ANS["Ansible\n11 Playbooks"]
+    end
 
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                              GITHUB                                         │
-│                                                                             │
-│  ┌─────────────────────────┐      ┌──────────────────────────────────────┐ │
-│  │   krasteki/platform_eng │      │   krasteki/finpulse-app              │ │
-│  │                         │      │                                      │ │
-│  │  argocd/                │      │  backend/    (FastAPI Python)        │ │
-│  │    root-app.yaml        │      │  frontend/   (React + Vite + TS)     │ │
-│  │    apps/                │      │  k8s/        (K8s manifests)         │ │
-│  │      finpulse.yaml      │      │  Dockerfile.backend                  │ │
-│  │  ansible/  (playbooks)  │      │  Dockerfile.frontend                 │ │
-│  │  terraform/ (infra)     │      │  .github/workflows/ci.yaml           │ │
-│  └──────────────┬──────────┘      └──────────────┬───────────────────────┘ │
-│                 │ ArgoCD watches               │                            │
-│                 │                              │ push → triggers CI         │
-│                 │                              ▼                            │
-│                 │                    ┌─────────────────────┐               │
-│                 │                    │  GitHub Actions CI  │               │
-│                 │                    │                     │               │
-│                 │                    │  1. QEMU (multi-arch│               │
-│                 │                    │  2. Docker Buildx   │               │
-│                 │                    │  3. Build backend   │               │
-│                 │                    │  4. Build frontend  │               │
-│                 │                    │  5. Push → GHCR     │               │
-│                 │                    │  6. Update image tag│               │
-│                 │                    │     in k8s/*.yaml   │               │
-│                 │                    │  7. git commit+push │               │
-│                 │                    └─────────┬───────────┘               │
-│                 │                              │ image tag updated          │
-└─────────────────┼──────────────────────────────┼───────────────────────────┘
-                  │                              │
-                  ▼                              ▼
-┌─────────────────────────────────────────────────────────────────────────────┐
-│                     KUBERNETES CLUSTER (HA, 3+3 nodes)                      │
-│                                                                             │
-│  ┌──────────────────────────────────────────────────────────────────────┐  │
-│  │  k8s-lb (HAProxy)                                                    │  │
-│  │  10.211.55.10:6443  →  round-robin → control-01/02/03:6443          │  │
-│  └──────────────────────────────────────────────────────────────────────┘  │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │  Networking & Ingress                                                 │ │
-│  │                                                                       │ │
-│  │  Flannel CNI  (pod CIDR: 10.244.0.0/16)                              │ │
-│  │  MetalLB L2   (pool: 10.211.55.200-250)                              │ │
-│  │  ingress-nginx  ──►  10.211.55.200  (LoadBalancer IP)                │ │
-│  │  cert-manager   ──►  local-ca-issuer  (self-signed CA)               │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │  namespace: argocd                                                    │ │
-│  │                                                                       │ │
-│  │  ArgoCD  (App-of-Apps pattern)                                        │ │
-│  │    root-app  ──watches──►  platform_eng/argocd/apps/                 │ │
-│  │      └── finpulse Application  ──watches──►  finpulse-app/k8s/       │ │
-│  │           syncPolicy: automated (prune + selfHeal)                   │ │
-│  │                                                                       │ │
-│  │  https://argocd.k8s.local                                            │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │  namespace: finpulse                                                  │ │
-│  │                                                                       │ │
-│  │  ┌─────────────────┐  ┌─────────────────┐  ┌────────────────────┐   │ │
-│  │  │  postgres        │  │  backend         │  │  frontend          │   │ │
-│  │  │  PostgreSQL 16   │  │  FastAPI / Python│  │  nginx / React     │   │ │
-│  │  │  PVC: 5Gi        │  │  port: 8000      │  │  port: 80          │   │ │
-│  │  │  (local-path)    │  │  /health probe   │  │  / probe           │   │ │
-│  │  └────────┬─────────┘  └────────┬─────────┘  └─────────┬──────────┘   │ │
-│  │           │                     │ asyncpg             │               │ │
-│  │           └─────────────────────┘                     │               │ │
-│  │                                                        │               │ │
-│  │  Secrets:                                              │               │ │
-│  │    finpulse-db-secret       (POSTGRES_USER/PASSWORD)   │               │ │
-│  │    finpulse-backend-secret  (DATABASE_URL, API keys)   │               │ │
-│  │    ghcr-pull-secret         (GHCR image pull)          │               │ │
-│  │                                                                       │ │
-│  │  Ingress:  finpulse.k8s.local  (HTTPS, TLS via cert-manager)         │ │
-│  │    /api/*  ──►  finpulse-backend:8000                                │ │
-│  │    /*      ──►  finpulse-frontend:80                                 │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-│                                                                             │
-│  ┌───────────────────────────────────────────────────────────────────────┐ │
-│  │  namespace: monitoring                                                │ │
-│  │                                                                       │ │
-│  │  kube-prometheus-stack                                                │ │
-│  │    Prometheus  ──scrapes──►  all pods, nodes, K8s metrics            │ │
-│  │    Grafana     ──►  https://grafana.k8s.local                        │ │
-│  │    Alertmanager                                                       │ │
-│  └───────────────────────────────────────────────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────────────────────┘
+    subgraph GITHUB["☁️ GitHub"]
+        REPO_INFRA["krasteki/platform_eng\nTerraform · Ansible · ArgoCD config"]
+        REPO_APP["krasteki/finpulse-app\nFastAPI · React · K8s manifests"]
+        CI["GitHub Actions CI\nMulti-arch Docker build\nlinux/amd64 + linux/arm64"]
+        GHCR["GHCR\nghcr.io/krasteki/finpulse-*"]
+    end
+
+    subgraph PARALLELS["🖥️ Parallels Desktop Pro"]
+        LB["k8s-lb\n10.211.55.10\nHAProxy :6443"]
+
+        subgraph CP["Control Plane (HA etcd quorum)"]
+            CP1["k8s-control-01\n10.211.55.11"]
+            CP2["k8s-control-02\n10.211.55.12"]
+            CP3["k8s-control-03\n10.211.55.13"]
+        end
+
+        subgraph WN["Worker Nodes"]
+            W1["k8s-worker-01\n10.211.55.21"]
+            W2["k8s-worker-02\n10.211.55.22"]
+            W3["k8s-worker-03\n10.211.55.23"]
+        end
+    end
+
+    TF -->|"prlctl clone × 7"| PARALLELS
+    ANS -->|"SSH → kubeadm init\nHAProxy · MetalLB · ArgoCD\nVault · Loki"| PARALLELS
+    VSCODE -->|"git push"| REPO_INFRA
+    VSCODE -->|"git push"| REPO_APP
+    REPO_APP -->|"trigger"| CI
+    CI -->|"docker push"| GHCR
+    CI -->|"update image tag\ngit commit+push"| REPO_APP
+    REPO_INFRA -->|"ArgoCD watches"| CP1
+    REPO_APP -->|"ArgoCD watches\nk8s/ path"| CP1
+    LB -->|":6443 round-robin"| CP1
+    LB -->|":6443 round-robin"| CP2
+    LB -->|":6443 round-robin"| CP3
 ```
 
 ---
 
-## CI/CD Flow (GitOps)
+## Kubernetes Cluster — Internal Architecture
 
-```
-Developer
-   │
-   │  git push (code change)
-   ▼
-GitHub (finpulse-app repo)
-   │
-   │  triggers
-   ▼
-GitHub Actions CI
-   ├── QEMU + Buildx (linux/amd64 + linux/arm64)
-   ├── Build Dockerfile.backend  →  ghcr.io/krasteki/finpulse-backend:<SHA>
-   ├── Build Dockerfile.frontend →  ghcr.io/krasteki/finpulse-frontend:<SHA>
-   ├── Push to GHCR
-   └── Update k8s/backend.yaml + k8s/frontend.yaml (image tag)
-          │  git commit + push
-          ▼
-       GitHub (k8s/ manifests updated)
-          │
-          │  ArgoCD polls every 3min (or manual refresh)
-          ▼
-       ArgoCD detects diff
-          │
-          │  kubectl apply
-          ▼
-       Kubernetes rolling update
-          │
-          │  readinessProbe passes
-          ▼
-       New pods Running ✓
-```
+```mermaid
+graph TB
+    INET["🌐 Browser\nfinpulse.k8s.local\ngrafana.k8s.local\nargocd.k8s.local\nvault.k8s.local"] 
 
----
+    subgraph NET["Networking Layer"]
+        MLB["MetalLB L2\npool: 10.211.55.200-250"]
+        ING["ingress-nginx\nLoadBalancer IP: 10.211.55.200"]
+        CM["cert-manager\nlocal-ca-issuer\n(TLS for all *.k8s.local)"]
+    end
 
-## Deploy Process — стъпка по стъпка
+    subgraph GITOPS["namespace: argocd"]
+        ARGO["ArgoCD\nApp-of-Apps pattern\nhttps://argocd.k8s.local"]
+        ROOT["root-app\nwatches argocd/apps/"]
+    end
 
-### Фаза 1: Infrastructure Provisioning (Terraform)
+    subgraph SECRETS["Secrets Management"]
+        VAULT["HashiCorp Vault\nnamespace: vault\nKV v2 · K8s Auth\nhttps://vault.k8s.local"]
+        ESO["External Secrets Operator\nnamespace: external-secrets\nClusterSecretStore: vault-backend"]
+    end
 
-**Цел:** Създаване на 7 VM-а в Parallels Desktop от един базов Ubuntu 22.04 ARM64 образ.
+    subgraph APP["namespace: finpulse"]
+        FE["frontend\nnginx + React/Vite\nport: 80"]
+        BE["backend\nFastAPI / Python 3.14\nport: 8000\n/health probe"]
+        PG["postgres\nPostgreSQL 16\nPVC: 5Gi local-path"]
+        ES1["ExternalSecret\nfinpulse-db-secret"]
+        ES2["ExternalSecret\nfinpulse-backend-secret"]
+    end
 
-```bash
-cd platform_eng/terraform
-terraform init
-terraform apply -auto-approve
-```
+    subgraph OBS["namespace: monitoring"]
+        PROM["Prometheus\nretention: 7d\nscrapes all pods+nodes"]
+        GRAF["Grafana\nhttps://grafana.k8s.local\nadmin / admin123"]
+        LOKI["Loki\nlog aggregation\nPVC: 5Gi"]
+        PTAIL["Promtail DaemonSet\n1 pod per node × 6"]
+    end
 
-**Какво прави Terraform:**
-- Клонира базовия VM `Ubuntu 22.04 ARM64` → 7 пъти (последователно, за да не претовари disk I/O)
-- Задава CPU/RAM за всеки VM:
-  - `k8s-lb`: 1 CPU / 512MB — HAProxy load balancer
-  - `k8s-control-01/02/03`: 2 CPU / 2GB — Kubernetes control plane (HA)
-  - `k8s-worker-01/02/03`: 2 CPU / 4GB — worker nodes
-- Стартира всички VM-ове
-- Генерира `ansible/inventory.ini` с IP адресите
-
-**Защо null_resource вместо Parallels provider:**  
-Официалният Terraform Parallels provider изисква `prl-devops-service` daemon — отделен enterprise компонент. Решението с `null_resource` + `prlctl` CLI работи директно и е напълно idempotent.
-
----
-
-### Фаза 2: Kubernetes Cluster Setup (Ansible)
-
-**Цел:** Инсталиране и конфигуриране на HA Kubernetes cluster с kubeadm.
-
-```bash
-cd platform_eng/ansible
-ansible-playbook -i inventory.ini 01-prereqs.yml      # containerd, kubeadm, kubelet, kubectl
-ansible-playbook -i inventory.ini 02-haproxy.yml      # HAProxy на k8s-lb за 6443
-ansible-playbook -i inventory.ini 03-control-init.yml  # kubeadm init + Flannel CNI
-ansible-playbook -i inventory.ini 04-join-nodes.yml    # control-02/03 + workers join
-```
-
-**Playbook описание:**
-
-| Playbook | Действие |
-|---|---|
-| `01-prereqs.yml` | static IP, hostname, containerd, kubeadm/kubelet/kubectl v1.29, kernel modules (br_netfilter, overlay) |
-| `02-haproxy.yml` | HAProxy config — TCP frontend :6443 → backend control-01/02/03:6443 |
-| `03-control-init.yml` | `kubeadm init --control-plane-endpoint k8s-lb:6443`, Flannel CNI, копиране на kubeconfig |
-| `04-join-nodes.yml` | `kubeadm join` за control-02, control-03 (HA) и worker-01/02/03 |
-
-**Резултат:** 6-node HA cluster, всички `Ready`:
-```
-k8s-control-01  Ready  control-plane
-k8s-control-02  Ready  control-plane
-k8s-control-03  Ready  control-plane
-k8s-worker-01   Ready  <none>
-k8s-worker-02   Ready  <none>
-k8s-worker-03   Ready  <none>
+    INET --> ING
+    ING --> FE
+    ING --> BE
+    ING --> ARGO
+    ING --> GRAF
+    ING --> VAULT
+    FE -->|"/api/* proxy"| BE
+    BE --> PG
+    MLB --> ING
+    CM -->|"TLS certs"| ING
+    ROOT -->|"discovers apps/"| ARGO
+    ARGO -->|"kubectl apply"| APP
+    ARGO -->|"kubectl apply"| VAULT
+    ARGO -->|"kubectl apply"| ESO
+    ARGO -->|"kubectl apply"| OBS
+    VAULT -->|"K8s auth\nKV secrets"| ESO
+    ESO -->|"creates K8s Secret"| ES1
+    ESO -->|"creates K8s Secret"| ES2
+    ES1 -->|"env vars"| PG
+    ES2 -->|"env vars"| BE
+    PTAIL -->|"ship logs"| LOKI
+    LOKI -->|"datasource"| GRAF
+    PROM -->|"datasource"| GRAF
 ```
 
 ---
 
-### Фаза 3: Platform Components (Ansible)
+## CI/CD GitOps Flow
 
-**Цел:** Инсталиране на networking, ingress, TLS, GitOps и observability слоеве.
+```mermaid
+sequenceDiagram
+    participant Dev as 👨‍💻 Developer
+    participant GH as GitHub
+    participant CI as GitHub Actions
+    participant GHCR as GHCR
+    participant ArgoCD as ArgoCD
+    participant K8s as Kubernetes
 
-```bash
-ansible-playbook -i inventory.ini 06-metallb.yml          # Layer 2 LoadBalancer
-ansible-playbook -i inventory.ini 07-ingress-nginx.yml    # Ingress controller
-ansible-playbook -i inventory.ini 08-cert-manager.yml     # TLS certificates
-ansible-playbook -i inventory.ini 09-argocd.yml           # GitOps engine
-ansible-playbook -i inventory.ini 10-prometheus-stack.yml # Monitoring
+    Dev->>GH: git push (code change)
+    GH->>CI: trigger workflow
+    CI->>CI: QEMU + Docker Buildx
+    CI->>CI: Build backend (linux/amd64+arm64)
+    CI->>CI: Build frontend (linux/amd64+arm64)
+    CI->>GHCR: push images :<git-sha>
+    CI->>GH: update k8s/*.yaml image tags
+    CI->>GH: git commit + push
+    GH-->>ArgoCD: poll / webhook (3min)
+    ArgoCD->>ArgoCD: detect diff in k8s/
+    ArgoCD->>K8s: kubectl apply
+    K8s->>K8s: rolling update
+    K8s-->>ArgoCD: readinessProbe /health ✓
+    ArgoCD-->>Dev: Synced + Healthy ✓
 ```
-
-**Компоненти:**
-
-| Component | Версия | Роля |
-|---|---|---|
-| **MetalLB** | v0.14 | L2 режим, IP pool `10.211.55.200-250` — дава реален IP на Services от тип LoadBalancer |
-| **ingress-nginx** | latest | Единична точка на влизане, terminates TLS, маршрутизира по hostname/path |
-| **cert-manager** | v1.14 | Автоматично издава TLS сертификати от local `ClusterIssuer` (self-signed CA) |
-| **ArgoCD** | v2.x | GitOps — непрекъснато синхронизира K8s cluster-а с GitHub repo |
-| **kube-prometheus-stack** | latest | Prometheus + Grafana + Alertmanager — metrics за nodes, pods, K8s |
-| **local-path-provisioner** | v0.0.28 | Default StorageClass за PVC (локален disk на worker nodes) |
-
-**ArgoCD App-of-Apps Pattern:**
-```
-root-app (platform_eng/argocd/apps/)
-  └── finpulse Application  →  watches finpulse-app/k8s/
-```
-Всяка нова Application yaml в `argocd/apps/` се открива и деплойва автоматично.
 
 ---
 
-### Фаза 4: Application Deployment (GitOps)
+## Secrets Flow (Vault + ESO)
 
-**Цел:** Deploy на FinPulse приложението чрез ArgoCD + GitHub Actions.
+```mermaid
+graph LR
+    subgraph VAULT["HashiCorp Vault"]
+        KV["KV v2\nsecret/finpulse/postgres\nsecret/finpulse/backend"]
+        AUTH["Kubernetes Auth\nrole: external-secrets\npolicy: read-only"]
+    end
 
-**Secrets (kubectl apply — еднократно):**
-```bash
-# PostgreSQL credentials
-kubectl create secret generic finpulse-db-secret -n finpulse \
-  --from-literal=POSTGRES_USER=finpulse_user \
-  --from-literal=POSTGRES_PASSWORD=finpulse_secret
+    subgraph ESO["External Secrets Operator"]
+        CSS["ClusterSecretStore\nvault-backend"]
+        EXT["ExternalSecret\n(per namespace)"]
+    end
 
-# Backend env
-kubectl create secret generic finpulse-backend-secret -n finpulse \
-  --from-literal=DATABASE_URL=postgresql+asyncpg://... \
-  --from-literal=FMP_API_KEY="" \
-  --from-literal=OPENAI_API_KEY=""
+    subgraph K8S["Kubernetes"]
+        SA["ServiceAccount\nexternal-secrets"]
+        SEC["K8s Secret\n(auto-created + refreshed 1h)"]
+        POD["finpulse pods\nenv vars injected"]
+    end
 
-# GHCR image pull (ако images са private)
-kubectl create secret docker-registry ghcr-pull-secret -n finpulse \
-  --docker-server=ghcr.io --docker-username=krasteki --docker-password=<PAT>
+    SA -->|"JWT token"| AUTH
+    AUTH -->|"Vault token"| CSS
+    CSS --> EXT
+    EXT -->|"pull secrets"| KV
+    EXT -->|"create/update"| SEC
+    SEC -->|"secretKeyRef"| POD
 ```
 
-**Application Stack:**
+---
 
-| Component | Technology | Image |
-|---|---|---|
-| **frontend** | React + Vite + TypeScript → nginx | `ghcr.io/krasteki/finpulse-frontend:<SHA>` |
-| **backend** | FastAPI + Python 3.14 + uvicorn | `ghcr.io/krasteki/finpulse-backend:<SHA>` |
-| **database** | PostgreSQL 16 | `postgres:16` |
+## Infrastructure Stack — Component Summary
 
-**CI/CD Pipeline (GitHub Actions):**
-1. Developer прави `git push` към `finpulse-app`
-2. GitHub Actions стартира автоматично
-3. Docker Buildx билдва multi-arch image (`linux/amd64` + `linux/arm64`) — QEMU за cross-compilation
-4. Push към GHCR с тага `<github.sha>`
-5. CI update-ва `k8s/backend.yaml` и `k8s/frontend.yaml` с новия SHA tag
-6. `git commit --push` обратно към repo
-7. ArgoCD засича промяната → `kubectl apply` → rolling update
+| Layer | Component | Version | Role |
+|---|---|---|---|
+| **Virtualization** | Parallels Desktop Pro | ARM64 | 7 VMs on Mac M3 |
+| **IaC** | Terraform + null_resource | ≥1.5 | VM provisioning via prlctl |
+| **Config Mgmt** | Ansible | 11 playbooks | K8s setup + platform config |
+| **Container Runtime** | containerd | 1.7 | CRI on all nodes |
+| **Kubernetes** | kubeadm | v1.29 | HA cluster (3 control + 3 workers) |
+| **Load Balancer** | HAProxy | — | API server HA endpoint :6443 |
+| **CNI** | Flannel | — | Pod network 10.244.0.0/16 |
+| **LB for Services** | MetalLB | v0.14 | L2 mode, IP pool .200-.250 |
+| **Ingress** | ingress-nginx | — | Single entry point, TLS termination |
+| **TLS** | cert-manager | v1.14 | local-ca-issuer for *.k8s.local |
+| **GitOps** | ArgoCD | v2.x | App-of-Apps, automated sync |
+| **CI/CD** | GitHub Actions | — | Multi-arch Docker build + push |
+| **Registry** | GHCR | — | ghcr.io/krasteki/finpulse-* |
+| **Secrets** | HashiCorp Vault | 0.28 | KV v2, Kubernetes auth method |
+| **Secrets Sync** | External Secrets Operator | 0.9 | Vault → K8s Secrets (1h refresh) |
+| **Storage** | local-path-provisioner | v0.0.28 | Default StorageClass (PVCs) |
+| **Metrics** | Prometheus | — | 7d retention, K8s + app metrics |
+| **Dashboards** | Grafana | — | Metrics + Logs in one UI |
+| **Logs** | Loki + Promtail | 2.6 | Log aggregation, 7d retention |
+| **App — Backend** | FastAPI + Python 3.14 | — | REST API, yfinance, asyncpg |
+| **App — Frontend** | React + Vite + TypeScript | — | SPA served by nginx |
+| **App — Database** | PostgreSQL | 16 | Persistent storage |
 
 ---
 
 ## Key Design Decisions
 
-| Decision | Why |
+| Decision | Rationale |
 |---|---|
-| **HA Control Plane (3 nodes)** | etcd quorum, без SPOF при control plane |
-| **HAProxy пред API server** | Единствен endpoint `k8s-lb:6443`, скрива броя на control nodes |
-| **Flannel CNI** | Лесна инсталация, стабилна, подходяща за on-prem |
-| **MetalLB L2** | Дава реални IP адреси на LoadBalancer services без cloud provider |
-| **App-of-Apps (ArgoCD)** | Scalable GitOps pattern — нова app = нов yaml файл в `argocd/apps/` |
-| **Two-repo strategy** | `platform_eng` (infra) vs `finpulse-app` (app code) — separation of concerns, различни права за достъп |
-| **Multi-arch Docker build** | Parallels ARM64 VMs + CI runners са AMD64 — двата image-а са необходими |
-| **Image tag = git SHA** | Пълна traceability кой commit е деплойнат в prod |
-| **Secrets извън Git** | Всички secrets са `kubectl create secret` — не влизат в repo |
-| **local-path-provisioner** | PostgreSQL PVC работи без cloud storage |
-| **cert-manager + local CA** | HTTPS навсякъде, дори локално — реалистичен setup |
+| **HA Control Plane (3 nodes)** | etcd quorum, no single point of failure |
+| **HAProxy before API server** | Single `k8s-lb:6443` endpoint, hides control plane topology |
+| **Two-repo strategy** | `platform_eng` (infra) vs `finpulse-app` (app) — separate concerns, separate access rights |
+| **App-of-Apps (ArgoCD)** | Scalable GitOps: new app = one yaml file in `argocd/apps/` |
+| **Multi-arch Docker build** | Parallels VMs are ARM64, GitHub runners are AMD64 — both needed |
+| **Image tag = git SHA** | Full traceability: know exactly which commit is deployed |
+| **Vault + ESO over plain K8s Secrets** | Secrets never in Git, centralized rotation, audit log |
+| **Loki over ELK** | 10× lower resource usage, integrates natively into Grafana |
+| **MetalLB L2** | Real LoadBalancer IPs on bare-metal without cloud provider |
+| **cert-manager + local CA** | HTTPS everywhere, realistic prod-like setup locally |
+| **local-path-provisioner** | PVCs work on bare-metal without NFS or cloud storage |
+| **Terraform null_resource** | No Parallels provider available; prlctl CLI is idempotent and works immediately |
 
 ---
 
-## Достъпни Endpoints
+## Endpoints
 
-| URL | Компонент |
-|---|---|
-| `https://finpulse.k8s.local` | FinPulse application |
-| `https://argocd.k8s.local` | ArgoCD UI |
-| `https://grafana.k8s.local` | Grafana dashboards |
-| `https://dashboard.k8s.local` | Kubernetes Dashboard |
+| URL | Service | Credentials |
+|---|---|---|
+| https://finpulse.k8s.local | FinPulse Application | — |
+| https://argocd.k8s.local | ArgoCD UI | admin / *(see initial secret)* |
+| https://grafana.k8s.local | Grafana (Metrics + Logs) | admin / admin123 |
+| https://vault.k8s.local | HashiCorp Vault UI | Token: see `vault-init-keys` secret |
+| https://dashboard.k8s.local | Kubernetes Dashboard | Bearer token |
 
 ---
 
 ## Repositories
 
-- **`github.com/krasteki/platform_eng`** — Terraform, Ansible, ArgoCD config
-- **`github.com/krasteki/finpulse-app`** — Application code + K8s manifests + CI
-- **`ghcr.io/krasteki/finpulse-backend`** — Backend Docker image (public)
-- **`ghcr.io/krasteki/finpulse-frontend`** — Frontend Docker image (public)
+| Repo | Purpose |
+|---|---|
+| `github.com/krasteki/platform_eng` | Terraform · Ansible · ArgoCD config · Architecture docs |
+| `github.com/krasteki/finpulse-app` | Application code · K8s manifests · CI pipeline |
+| `ghcr.io/krasteki/finpulse-backend` | Backend Docker image (multi-arch) |
+| `ghcr.io/krasteki/finpulse-frontend` | Frontend Docker image (multi-arch) |
