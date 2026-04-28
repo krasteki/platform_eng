@@ -1,6 +1,6 @@
 # Platform Engineering — Local Kubernetes Lab
 
-> Production-grade Kubernetes platform running locally on **Parallels VMs (Mac M3)** — built to demonstrate Platform Engineering skills: IaC, GitOps, CI/CD, Secrets Management, and full Observability.
+> Production-grade Kubernetes platform running locally on **Parallels VMs (Mac M3)** — IaC, GitOps, CI/CD, Secrets Management, and full Observability.
 
 ## What's Running
 
