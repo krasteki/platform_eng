@@ -1,0 +1,80 @@
+---
+# ExternalSecret: MinIO credentials for MinIO itself
+# Pulls from Vault: secret/velero/minio
+# Creates K8s Secret: minio-credentials (used by MinIO Helm chart)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: minio-credentials
+  namespace: velero
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: minio-credentials
+    creationPolicy: Owner
+  data:
+    - secretKey: rootUser
+      remoteRef:
+        key: velero/minio
+        property: access_key
+    - secretKey: rootPassword
+      remoteRef:
+        key: velero/minio
+        property: secret_key
+
+---
+# ExternalSecret: Velero S3 credentials (AWS-format for MinIO)
+# Pulls from Vault: secret/velero/minio
+# Creates K8s Secret: velero-s3-credentials (used by Velero Helm chart)
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: velero-s3-credentials
+  namespace: velero
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: vault-backend
+    kind: ClusterSecretStore
+  target:
+    name: velero-s3-credentials
+    creationPolicy: Owner
+    template:
+      data:
+        # Velero expects AWS-format credentials file
+        cloud: |
+          [default]
+          aws_access_key_id={{ "{{" }} .access_key {{ "}}" }}
+          aws_secret_access_key={{ "{{" }} .secret_key {{ "}}" }}
+  data:
+    - secretKey: access_key
+      remoteRef:
+        key: velero/minio
+        property: access_key
+    - secretKey: secret_key
+      remoteRef:
+        key: velero/minio
+        property: secret_key
+
+---
+# BackupSchedule: daily backup of finpulse namespace at 02:00
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: finpulse-daily
+  namespace: velero
+spec:
+  schedule: "0 2 * * *"
+  template:
+    includedNamespaces:
+      - finpulse
+    excludedResources:
+      - events
+      - events.events.k8s.io
+    storageLocation: default
+    ttl: 168h0m0s   # 7-day retention
+    snapshotVolumes: false
+    defaultVolumesToFsBackup: true  # restic for PVC data

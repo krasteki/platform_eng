@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: minio
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "1"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://charts.min.io/
+    chart: minio
+    targetRevision: "5.*"
+    helm:
+      values: |
+        # Standalone mode for local lab
+        mode: standalone
+
+        # Credentials injected via ESO from Vault (secret/velero/minio)
+        existingSecret: minio-credentials
+
+        persistence:
+          enabled: true
+          storageClass: local-path
+          size: 10Gi
+
+        resources:
+          requests:
+            memory: 256Mi
+            cpu: 100m
+          limits:
+            memory: 512Mi
+            cpu: 500m
+
+        # Create the velero bucket on startup
+        buckets:
+          - name: velero
+            policy: none
+            purge: false
+
+        service:
+          type: ClusterIP
+          port: 9000
+
+        # Disable console for resource savings (lab)
+        consoleService:
+          type: ClusterIP
+          port: 9001
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: velero
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

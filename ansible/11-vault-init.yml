@@ -31,6 +31,9 @@
     finpulse_db_url: "postgresql+asyncpg://finpulse_user:finpulse_secret@postgres:5432/finpulse"
     fmp_api_key: ""
     openai_api_key: ""
+    # MinIO credentials for Velero backup storage (local lab)
+    minio_access_key: "velero-minio"
+    minio_secret_key: "velero-minio-secret"
 
   environment:
     KUBECONFIG: /home/parallels/.kube/config
@@ -228,6 +231,16 @@
                FMP_API_KEY='{{ fmp_api_key }}'
                OPENAI_API_KEY='{{ openai_api_key }}'"
 
+    - name: Write Velero/MinIO credentials
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault kv put secret/velero/minio
+               access_key='{{ minio_access_key }}'
+               secret_key='{{ minio_secret_key }}'"
+      register: velero_secret_result
+      failed_when: velero_secret_result.rc != 0
+
     # ------------------------------------------------------------------ #
     # Summary                                                             #
     # ------------------------------------------------------------------ #
@@ -243,6 +256,7 @@
           - "Secrets written:"
           - "  secret/finpulse/postgres"
           - "  secret/finpulse/backend"
+          - "  secret/velero/minio"
           - "                                        "
           - "Auto-unseal: kubectl exec -n vault vault-0 --"
           - "  vault operator unseal <unseal_key>"

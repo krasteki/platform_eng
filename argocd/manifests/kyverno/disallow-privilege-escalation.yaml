@@ -1,0 +1,53 @@
+# Policy: забранява privilege escalation и root containers в finpulse
+# Mode: enforce за finpulse (production namespace), audit за останалите
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: disallow-privilege-escalation
+  annotations:
+    policies.kyverno.io/title: Disallow Privilege Escalation
+    policies.kyverno.io/category: Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      Containers must not allow privilege escalation or run as root.
+      Enforced for finpulse namespace; audit for others.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    # No privilege escalation anywhere in finpulse
+    - name: deny-privilege-escalation
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - finpulse
+      validate:
+        message: "Privilege escalation is not allowed in finpulse namespace."
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              securityContext:
+                allowPrivilegeEscalation: "false"
+
+    # No privileged containers in finpulse
+    - name: deny-privileged-containers
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - finpulse
+      validate:
+        message: "Privileged containers are not allowed in finpulse namespace."
+        foreach:
+          - list: "request.object.spec.containers"
+            deny:
+              conditions:
+                any:
+                  - key: "{{ element.securityContext.privileged }}"
+                    operator: Equals
+                    value: true

@@ -1,0 +1,41 @@
+# Policy: всички pods трябва да имат label "app"
+# Mode: audit — записва violations в PolicyReport, не блокира
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: require-pod-labels
+  annotations:
+    policies.kyverno.io/title: Require Pod Labels
+    policies.kyverno.io/category: Best Practices
+    policies.kyverno.io/severity: medium
+    policies.kyverno.io/description: >-
+      Requires that all Pods have an 'app' label defined.
+      This ensures observability and proper NetworkPolicy targeting.
+spec:
+  validationFailureAction: Audit
+  background: true
+  rules:
+    - name: check-app-label
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - finpulse
+                - monitoring
+                - vault
+      exclude:
+        any:
+          - resources:
+              namespaces:
+                - kube-system
+                - kyverno
+                - argocd
+                - cert-manager
+      validate:
+        message: "Pod must have label 'app' defined."
+        pattern:
+          metadata:
+            labels:
+              app: "?*"

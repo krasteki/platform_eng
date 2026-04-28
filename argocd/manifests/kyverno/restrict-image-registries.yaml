@@ -1,0 +1,35 @@
+# Policy: finpulse pods могат да използват само images от ghcr.io/krasteki/
+# Mode: enforce — блокира всякакви images от неодобрени registries в finpulse
+apiVersion: kyverno.io/v1
+kind: ClusterPolicy
+metadata:
+  name: restrict-image-registries
+  annotations:
+    policies.kyverno.io/title: Restrict Image Registries
+    policies.kyverno.io/category: Supply Chain Security
+    policies.kyverno.io/severity: high
+    policies.kyverno.io/description: >-
+      All container images in the finpulse namespace must come from
+      the approved registry: ghcr.io/krasteki/.
+      This prevents supply chain attacks via untrusted images.
+      Exception: postgres uses the official Docker Hub image.
+spec:
+  validationFailureAction: Enforce
+  background: true
+  rules:
+    - name: validate-image-registry
+      match:
+        any:
+          - resources:
+              kinds:
+                - Pod
+              namespaces:
+                - finpulse
+      validate:
+        message: >-
+          Images in finpulse must come from ghcr.io/krasteki/ or docker.io/library/.
+          Found: {{ request.object.spec.containers[].image }}.
+        foreach:
+          - list: "request.object.spec.containers"
+            pattern:
+              image: "ghcr.io/krasteki/* | postgres:*"
