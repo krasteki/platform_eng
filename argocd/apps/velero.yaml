@@ -16,6 +16,9 @@ spec:
     targetRevision: "7.*"
     helm:
       values: |
+        # Skip CRD upgrade job (bitnami/kubectl:1.29 tag not found on Docker Hub)
+        upgradeCRDs: false
+
         # AWS plugin for S3-compatible (MinIO) backend
         initContainers:
           - name: velero-plugin-for-aws
