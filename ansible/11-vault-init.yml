@@ -154,9 +154,10 @@
       command: >
         kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
         sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
-               vault secrets enable -path=secret kv-v2 2>&1 || true"
+               vault secrets enable -path=secret kv-v2 2>&1"
       register: kv_enable
-      changed_when: "'already enabled' not in kv_enable.stdout"
+      failed_when: kv_enable.rc != 0 and 'path is already in use' not in kv_enable.stdout
+      changed_when: "'already in use' not in kv_enable.stdout"
 
     # ------------------------------------------------------------------ #
     # 7. Конфигурирай Kubernetes auth method                             #
@@ -166,9 +167,10 @@
       command: >
         kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
         sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
-               vault auth enable kubernetes 2>&1 || true"
+               vault auth enable kubernetes 2>&1"
       register: k8s_auth_enable
-      changed_when: "'already enabled' not in k8s_auth_enable.stdout"
+      failed_when: k8s_auth_enable.rc != 0 and 'path is already in use' not in k8s_auth_enable.stdout
+      changed_when: "'already in use' not in k8s_auth_enable.stdout"
 
     - name: Configure Kubernetes auth method
       command: >
@@ -181,18 +183,15 @@
     # 8. Създай Vault policy за External Secrets Operator               #
     # ------------------------------------------------------------------ #
 
+    - name: Write policy file into vault container
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "printf 'path \"secret/data/*\" { capabilities = [\"read\",\"list\"] }\npath \"secret/metadata/*\" { capabilities = [\"read\",\"list\"] }\n' > /tmp/eso-policy.hcl"
+
     - name: Create external-secrets-read policy
       command: >
         kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
-        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
-               vault policy write external-secrets-read - << 'EOF'
-        path \"secret/data/*\" {
-          capabilities = [\"read\", \"list\"]
-        }
-        path \"secret/metadata/*\" {
-          capabilities = [\"read\", \"list\"]
-        }
-        EOF"
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }} vault policy write external-secrets-read /tmp/eso-policy.hcl"
 
     # ------------------------------------------------------------------ #
     # 9. Създай Vault role за ESO ServiceAccount                        #
