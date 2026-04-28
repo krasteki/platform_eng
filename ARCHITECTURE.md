@@ -237,6 +237,30 @@ graph LR
 
 ---
 
+## Ansible Bootstrap Order
+
+Full cluster bootstrap from zero — run in sequence:
+
+```bash
+cd ansible/
+ansible-playbook -i inventory.ini 01-prereqs.yml        # OS prep: swap off, modules, sysctl, containerd, kubeadm/kubelet
+ansible-playbook -i inventory.ini 02-haproxy.yml        # HAProxy LB on k8s-lb → API server :6443
+ansible-playbook -i inventory.ini 03-control-init.yml   # kubeadm init on control-01, copy kubeconfig, install Flannel CNI
+ansible-playbook -i inventory.ini 04-join-nodes.yml     # Join control-02/03 + workers to cluster
+ansible-playbook -i inventory.ini 05-static-ips.yml     # Persist static IPs across VM reboots (netplan)
+ansible-playbook -i inventory.ini 06-metallb.yml        # MetalLB L2 + IP pool 10.211.55.200-250
+ansible-playbook -i inventory.ini 07-ingress-nginx.yml  # ingress-nginx (LoadBalancer → MetalLB IP)
+ansible-playbook -i inventory.ini 08-cert-manager.yml   # cert-manager + local CA + ClusterIssuer
+ansible-playbook -i inventory.ini 09-argocd.yml         # ArgoCD + root App-of-Apps → deploys everything else
+ansible-playbook -i inventory.ini 10-prometheus-stack.yml # kube-prometheus-stack (Prometheus + Grafana + Alertmanager)
+ansible-playbook -i inventory.ini 11-vault-init.yml     # Vault init + unseal + KV v2 + K8s auth + finpulse secrets
+```
+
+> After playbook 09, ArgoCD automatically deploys: MetalLB config, ingress-nginx, cert-manager, Vault, ESO, Loki, finpulse app.  
+> Playbook 11 must run **after** ArgoCD has synced the Vault application (pod Running).
+
+---
+
 ## Repositories
 
 | Repo | Purpose |
