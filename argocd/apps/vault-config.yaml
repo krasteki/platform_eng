@@ -1,0 +1,25 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vault-config
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+  annotations:
+    # Деплойва се след vault + external-secrets
+    argocd.argoproj.io/sync-wave: "10"
+spec:
+  project: platform
+  source:
+    repoURL: https://github.com/krasteki/platform_eng.git
+    targetRevision: main
+    path: argocd/manifests/vault
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vault
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

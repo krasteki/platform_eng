@@ -1,0 +1,59 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: vault
+  namespace: argocd
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://helm.releases.hashicorp.com
+    chart: vault
+    targetRevision: "0.28.*"
+    helm:
+      values: |
+        server:
+          standalone:
+            enabled: true
+            config: |
+              ui = true
+              listener "tcp" {
+                tls_disable = 1
+                address     = "[::]:8200"
+                cluster_address = "[::]:8201"
+              }
+              storage "file" {
+                path = "/vault/data"
+              }
+          dataStorage:
+            enabled: true
+            size: 1Gi
+            storageClass: local-path
+          readinessProbe:
+            enabled: true
+            path: /v1/sys/health?standbyok=true&sealedcode=204&uninitcode=204
+          livenessProbe:
+            enabled: true
+            path: /v1/sys/health?standbyok=true
+            initialDelaySeconds: 60
+          resources:
+            requests:
+              memory: 256Mi
+              cpu: 100m
+            limits:
+              memory: 512Mi
+        # Vault Agent Injector изключен — ползваме External Secrets Operator
+        injector:
+          enabled: false
+        ui:
+          enabled: true
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: vault
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true

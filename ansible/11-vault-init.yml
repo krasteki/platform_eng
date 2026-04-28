@@ -1,0 +1,254 @@
+---
+# 11-vault-init.yml
+# Инициализира HashiCorp Vault след деплой от ArgoCD:
+#   1. vault operator init (1 unseal key за локален setup)
+#   2. vault operator unseal
+#   3. Конфигурира Kubernetes auth method
+#   4. Създава KV v2 secrets engine (path: secret/)
+#   5. Създава policy за External Secrets Operator
+#   6. Записва finpulse secrets в Vault
+#   7. Запазва root token + unseal key в K8s Secret (само за локален dev!)
+#
+# Usage: ansible-playbook -i inventory.ini 11-vault-init.yml
+#
+# ВАЖНО: Пусни го само след като ArgoCD е deploy-нал vault + external-secrets!
+#   Провери: kubectl get pods -n vault
+#
+# За unseal след рестарт на cluster-а:
+#   kubectl exec -n vault vault-0 -- vault operator unseal <unseal_key>
+
+- name: Initialize and configure HashiCorp Vault
+  hosts: control_plane[0]
+  become: false
+  gather_facts: false
+
+  vars:
+    vault_namespace: vault
+    vault_pod: vault-0
+    vault_addr: "http://127.0.0.1:8200"
+    finpulse_db_user: "finpulse_user"
+    finpulse_db_password: "finpulse_secret"
+    finpulse_db_url: "postgresql+asyncpg://finpulse_user:finpulse_secret@postgres:5432/finpulse"
+    fmp_api_key: ""
+    openai_api_key: ""
+
+  environment:
+    KUBECONFIG: /home/parallels/.kube/config
+
+  tasks:
+
+    # ------------------------------------------------------------------ #
+    # 1. Изчакай vault-0 pod да е Running                                 #
+    # ------------------------------------------------------------------ #
+
+    - name: Wait for vault-0 pod to be Running
+      command: >
+        kubectl wait pod/{{ vault_pod }}
+        -n {{ vault_namespace }}
+        --for=condition=Ready
+        --timeout=300s
+      register: vault_ready
+      retries: 3
+      delay: 10
+
+    # ------------------------------------------------------------------ #
+    # 2. Провери дали Vault вече е инициализиран                         #
+    # ------------------------------------------------------------------ #
+
+    - name: Check Vault init status
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        vault status -format=json
+      register: vault_status_raw
+      failed_when: vault_status_raw.rc not in [0, 1, 2]
+
+    - name: Parse Vault status
+      set_fact:
+        vault_status: "{{ vault_status_raw.stdout | from_json }}"
+
+    - name: Show Vault status
+      debug:
+        msg: "Vault initialized: {{ vault_status.initialized }}, Sealed: {{ vault_status.sealed }}"
+
+    # ------------------------------------------------------------------ #
+    # 3. Инициализирай Vault (само ако не е инициализиран)               #
+    # ------------------------------------------------------------------ #
+
+    - name: Initialize Vault
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        vault operator init
+        -key-shares=1
+        -key-threshold=1
+        -format=json
+      register: vault_init_raw
+      when: not vault_status.initialized
+
+    - name: Parse init output
+      set_fact:
+        vault_init: "{{ vault_init_raw.stdout | from_json }}"
+      when: not vault_status.initialized
+
+    - name: Save init data as facts
+      set_fact:
+        vault_unseal_key: "{{ vault_init.unseal_keys_b64[0] }}"
+        vault_root_token: "{{ vault_init.root_token }}"
+      when: not vault_status.initialized
+
+    # ------------------------------------------------------------------ #
+    # 4. Unseal Vault                                                     #
+    # ------------------------------------------------------------------ #
+
+    - name: Unseal Vault (first time)
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        vault operator unseal {{ vault_unseal_key }}
+      when: not vault_status.initialized
+
+    - name: Save unseal key + root token to K8s Secret
+      command: >
+        kubectl create secret generic vault-init-keys
+        -n {{ vault_namespace }}
+        --from-literal=unseal-key={{ vault_unseal_key }}
+        --from-literal=root-token={{ vault_root_token }}
+        --dry-run=client -o yaml
+      register: vault_secret_yaml
+      when: not vault_status.initialized
+
+    - name: Apply vault-init-keys secret
+      command: >
+        kubectl apply -f -
+      args:
+        stdin: "{{ vault_secret_yaml.stdout }}"
+      when: not vault_status.initialized
+
+    # ------------------------------------------------------------------ #
+    # 5. Ако Vault е вече инициализиран — вземи root token от secret     #
+    # ------------------------------------------------------------------ #
+
+    - name: Get root token from existing secret
+      command: >
+        kubectl get secret vault-init-keys
+        -n {{ vault_namespace }}
+        -o jsonpath='{.data.root-token}'
+      register: root_token_b64
+      when: vault_status.initialized
+
+    - name: Decode existing root token
+      command: base64 -d
+      args:
+        stdin: "{{ root_token_b64.stdout }}"
+      register: root_token_decoded
+      when: vault_status.initialized
+
+    - name: Set root token fact (existing Vault)
+      set_fact:
+        vault_root_token: "{{ root_token_decoded.stdout }}"
+      when: vault_status.initialized
+
+    # ------------------------------------------------------------------ #
+    # 6. Конфигурирай KV v2 secrets engine                               #
+    # ------------------------------------------------------------------ #
+
+    - name: Enable KV v2 secrets engine at secret/
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault secrets enable -path=secret kv-v2 2>&1 || true"
+      register: kv_enable
+      changed_when: "'already enabled' not in kv_enable.stdout"
+
+    # ------------------------------------------------------------------ #
+    # 7. Конфигурирай Kubernetes auth method                             #
+    # ------------------------------------------------------------------ #
+
+    - name: Enable Kubernetes auth method
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault auth enable kubernetes 2>&1 || true"
+      register: k8s_auth_enable
+      changed_when: "'already enabled' not in k8s_auth_enable.stdout"
+
+    - name: Configure Kubernetes auth method
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault write auth/kubernetes/config
+               kubernetes_host=https://kubernetes.default.svc:443"
+
+    # ------------------------------------------------------------------ #
+    # 8. Създай Vault policy за External Secrets Operator               #
+    # ------------------------------------------------------------------ #
+
+    - name: Create external-secrets-read policy
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault policy write external-secrets-read - << 'EOF'
+        path \"secret/data/*\" {
+          capabilities = [\"read\", \"list\"]
+        }
+        path \"secret/metadata/*\" {
+          capabilities = [\"read\", \"list\"]
+        }
+        EOF"
+
+    # ------------------------------------------------------------------ #
+    # 9. Създай Vault role за ESO ServiceAccount                        #
+    # ------------------------------------------------------------------ #
+
+    - name: Create external-secrets Vault role
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault write auth/kubernetes/role/external-secrets
+               bound_service_account_names=external-secrets
+               bound_service_account_namespaces=external-secrets
+               policies=external-secrets-read
+               ttl=24h"
+
+    # ------------------------------------------------------------------ #
+    # 10. Запиши finpulse secrets във Vault                              #
+    # ------------------------------------------------------------------ #
+
+    - name: Write finpulse/postgres secrets
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault kv put secret/finpulse/postgres
+               POSTGRES_USER={{ finpulse_db_user }}
+               POSTGRES_PASSWORD={{ finpulse_db_password }}"
+
+    - name: Write finpulse/backend secrets
+      command: >
+        kubectl exec -n {{ vault_namespace }} {{ vault_pod }} --
+        sh -c "VAULT_TOKEN={{ vault_root_token }} VAULT_ADDR={{ vault_addr }}
+               vault kv put secret/finpulse/backend
+               DATABASE_URL='{{ finpulse_db_url }}'
+               FMP_API_KEY='{{ fmp_api_key }}'
+               OPENAI_API_KEY='{{ openai_api_key }}'"
+
+    # ------------------------------------------------------------------ #
+    # Summary                                                             #
+    # ------------------------------------------------------------------ #
+
+    - name: Vault configuration complete
+      debug:
+        msg:
+          - "========================================"
+          - "Vault is ready!"
+          - "URL: https://vault.k8s.local"
+          - "Root token: {{ vault_root_token }}"
+          - "                                        "
+          - "Secrets written:"
+          - "  secret/finpulse/postgres"
+          - "  secret/finpulse/backend"
+          - "                                        "
+          - "Auto-unseal: kubectl exec -n vault vault-0 --"
+          - "  vault operator unseal <unseal_key>"
+          - "(Key saved in: kubectl get secret vault-init-keys -n vault)"
+          - "========================================"
+          - "Add to /etc/hosts on your Mac:"
+          - "10.211.55.200  vault.k8s.local"
+          - "========================================"
