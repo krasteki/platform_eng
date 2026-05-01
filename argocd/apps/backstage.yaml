@@ -105,9 +105,8 @@ spec:
           annotations:
             cert-manager.io/cluster-issuer: local-ca-issuer
           tls:
-            - secretName: backstage-tls
-              hosts:
-                - backstage.k8s.local
+            enabled: true
+            secretName: backstage-tls
 
   destination:
     server: https://kubernetes.default.svc
