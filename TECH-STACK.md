@@ -163,6 +163,15 @@ Complete reference of all technologies used in this platform — what each tool 
 
 ---
 
+## Code Quality
+
+### SonarQube
+- **What:** Static application security testing (SAST) and code quality platform
+- **Why:** Catches security vulnerabilities (SQL injection, hardcoded secrets, insecure dependencies) in Python and TypeScript _before_ deploy. Quality Gates in GitHub Actions block PRs that fail coverage, bug count, or security thresholds — ArgoCD never sees a bad image tag.
+- **How:** Deployed as a Helm chart on control-plane nodes (4GB RAM — workers have only 2GB). Embedded PostgreSQL for persistence. Exposed at `https://sonarqube.k8s.local`. GitHub Actions workflow runs `sonar-scanner` on every push; if the Quality Gate fails, the pipeline stops before building the Docker image. ServiceMonitor exposes metrics to Prometheus.
+
+---
+
 ## Application Stack
 
 ### FastAPI (Python 3.14)

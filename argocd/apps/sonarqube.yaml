@@ -1,0 +1,118 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: sonarqube
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://SonarSource.github.io/helm-chart-sonarqube
+    chart: sonarqube
+    targetRevision: "10.*"
+    helm:
+      values: |
+        # ------------------------------------------------------------------ #
+        # JVM — намалени heap-ове за lab (default: 512m/2g → 256m/1g)
+        # ------------------------------------------------------------------ #
+        jvmOpts: "-Xms256m -Xmx1g"
+        jvmCeOpts: "-Xms128m -Xmx512m"
+
+        resources:
+          requests:
+            cpu: 200m
+            memory: 1Gi
+          limits:
+            cpu: "1"
+            memory: 2Gi
+
+        # ------------------------------------------------------------------ #
+        # Schedule на control-plane нодовете (4GB RAM)
+        # Workers имат само 2GB — не са достатъчни
+        # ------------------------------------------------------------------ #
+        tolerations:
+          - key: node-role.kubernetes.io/control-plane
+            operator: Exists
+            effect: NoSchedule
+
+        nodeSelector:
+          node-role.kubernetes.io/control-plane: ""
+
+        # ------------------------------------------------------------------ #
+        # init sysctl — изисква се от embedded Elasticsearch
+        # ------------------------------------------------------------------ #
+        initSysctl:
+          enabled: true
+          vmMaxMapCount: 524288
+          fsFileMax: 131072
+          nofile: 131072
+          nproc: 8192
+          securityContext:
+            runAsUser: 0
+            privileged: true
+
+        # ------------------------------------------------------------------ #
+        # PostgreSQL — bundled subchart
+        # ------------------------------------------------------------------ #
+        postgresql:
+          enabled: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          primary:
+            tolerations:
+              - key: node-role.kubernetes.io/control-plane
+                operator: Exists
+                effect: NoSchedule
+            nodeSelector:
+              node-role.kubernetes.io/control-plane: ""
+
+        # ------------------------------------------------------------------ #
+        # Persistent storage
+        # ------------------------------------------------------------------ #
+        persistence:
+          enabled: true
+          storageClass: local-path
+          size: 5Gi
+
+        # ------------------------------------------------------------------ #
+        # Ingress
+        # ------------------------------------------------------------------ #
+        ingress:
+          enabled: true
+          ingressClassName: nginx
+          annotations:
+            cert-manager.io/cluster-issuer: local-ca-issuer
+          hosts:
+            - name: sonarqube.k8s.local
+              path: /
+          tls:
+            - secretName: sonarqube-tls
+              hosts:
+                - sonarqube.k8s.local
+
+        # ------------------------------------------------------------------ #
+        # Monitoring — ServiceMonitor за Prometheus
+        # ------------------------------------------------------------------ #
+        prometheusMonitoring:
+          podMonitor:
+            enabled: true
+            namespace: sonarqube
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: sonarqube
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true
