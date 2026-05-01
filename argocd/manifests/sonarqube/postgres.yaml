@@ -1,0 +1,84 @@
+---
+# PostgreSQL за SonarQube — official postgres:16 image
+# Отделен от bitnami subchart (bitnami е премахнал version тагове от Docker Hub).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sonarqube-db
+  namespace: sonarqube
+  labels:
+    app: sonarqube-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: sonarqube-db
+  template:
+    metadata:
+      labels:
+        app: sonarqube-db
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - name: POSTGRES_DB
+              value: sonar
+            - name: POSTGRES_USER
+              value: sonar
+            - name: POSTGRES_PASSWORD
+              value: sonar_secret
+          ports:
+            - containerPort: 5432
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "sonar"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: sonarqube-db-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sonarqube-db-pvc
+  namespace: sonarqube
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sonarqube-db
+  namespace: sonarqube
+  labels:
+    app: sonarqube-db
+spec:
+  selector:
+    app: sonarqube-db
+  ports:
+    - port: 5432
+      targetPort: 5432

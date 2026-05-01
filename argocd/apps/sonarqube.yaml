@@ -55,28 +55,18 @@ spec:
             privileged: true
 
         # ------------------------------------------------------------------ #
-        # PostgreSQL — bundled subchart
-        # Bitnami е премахнал стари version тагове от Docker Hub (2024).
-        # Override image.tag=latest — единственият наличен named таг.
+        # PostgreSQL — DISABLED (bitnami subchart използва несъществуващи
+        # version тагове на Docker Hub). Използваме externalDatabase.
+        # Отделен postgres Deployment е дефиниран в argocd/manifests/sonarqube/
         # ------------------------------------------------------------------ #
         postgresql:
-          enabled: true
-          image:
-            tag: latest
-          resources:
-            requests:
-              cpu: 100m
-              memory: 256Mi
-            limits:
-              cpu: 500m
-              memory: 512Mi
-          primary:
-            tolerations:
-              - key: node-role.kubernetes.io/control-plane
-                operator: Exists
-                effect: NoSchedule
-            nodeSelector:
-              node-role.kubernetes.io/control-plane: ""
+          enabled: false
+
+        jdbcOverwrite:
+          enable: true
+          jdbcUrl: "jdbc:postgresql://sonarqube-db:5432/sonar"
+          jdbcUsername: "sonar"
+          jdbcPassword: "sonar_secret"
 
         # ------------------------------------------------------------------ #
         # Persistent storage
