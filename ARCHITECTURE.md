@@ -1,7 +1,7 @@
 # FinPulse — Platform Engineering Architecture
 
-> **Local Kubernetes Platform** built with GitOps, CI/CD, Secrets Management, and full Observability  
-> **Stack:** Parallels · Terraform · Ansible · Kubernetes (HA) · ArgoCD · GitHub Actions · Vault · Prometheus · Grafana · Loki
+> **Local Kubernetes Platform** built with GitOps, CI/CD, Code Quality, Secrets Management, and full Observability  
+> **Stack:** Parallels · Terraform · Ansible · Kubernetes (HA) · ArgoCD · GitHub Actions · Vault · Prometheus · Grafana · Loki · SonarQube · Backstage
 
 ---
 
@@ -18,7 +18,7 @@ graph TB
     subgraph GITHUB["☁️ GitHub"]
         REPO_INFRA["krasteki/platform_eng\nTerraform · Ansible · ArgoCD config"]
         REPO_APP["krasteki/finpulse-app\nFastAPI · React · K8s manifests"]
-        CI["GitHub Actions CI\nMulti-arch Docker build\nlinux/amd64 + linux/arm64"]
+        CI["GitHub Actions CI\nSonarQube Scan → Quality Gate\n→ Multi-arch Docker build"]
         GHCR["GHCR\nghcr.io/krasteki/finpulse-*"]
     end
 
@@ -43,6 +43,7 @@ graph TB
     VSCODE -->|"git push"| REPO_INFRA
     VSCODE -->|"git push"| REPO_APP
     REPO_APP -->|"trigger"| CI
+    CI -->|"SonarQube scan\n(internal cluster DNS)"| CP1
     CI -->|"docker push"| GHCR
     CI -->|"update image tag\ngit commit+push"| REPO_APP
     REPO_INFRA -->|"ArgoCD watches"| CP1
@@ -58,7 +59,7 @@ graph TB
 
 ```mermaid
 graph TB
-    INET["🌐 Browser\nfinpulse.k8s.local\ngrafana.k8s.local\nargocd.k8s.local\nvault.k8s.local"] 
+    INET["🌐 Browser\nfinpulse.k8s.local\ngrafana.k8s.local\nargocd.k8s.local\nvault.k8s.local\nsonarqube.k8s.local\nbackstage.k8s.local"] 
 
     subgraph NET["Networking Layer"]
         MLB["MetalLB L2\npool: 10.211.55.200-250"]
@@ -91,12 +92,28 @@ graph TB
         PTAIL["Promtail DaemonSet\n1 pod per node × 6"]
     end
 
+    subgraph SQ["namespace: sonarqube"]
+        SONAR["SonarQube Community\nhttps://sonarqube.k8s.local"]
+        SQDB["PostgreSQL 16\nsonarqube-db svc"]
+    end
+
+    subgraph RUNNERS["namespace: github-runners"]
+        RUNNER["Self-hosted GitHub Actions Runner\nmyoung34/github-runner\nlabels: self-hosted,k8s-local"]
+    end
+
+    subgraph BACKSTAGE["namespace: backstage"]
+        BS["Backstage IDP\nhttps://backstage.k8s.local\nService Catalog · TechDocs"]
+        BSDB["PostgreSQL 16\nbackstage-db svc"]
+    end
+
     INET --> ING
     ING --> FE
     ING --> BE
     ING --> ARGO
     ING --> GRAF
     ING --> VAULT
+    ING --> SONAR
+    ING --> BS
     FE -->|"/api/* proxy"| BE
     BE --> PG
     MLB --> ING
@@ -114,6 +131,12 @@ graph TB
     PTAIL -->|"ship logs"| LOKI
     LOKI -->|"datasource"| GRAF
     PROM -->|"datasource"| GRAF
+    SONAR --> SQDB
+    BS --> BSDB
+    RUNNER -->|"SonarQube scan\nHTTP internal DNS"| SONAR
+    ARGO -->|"kubectl apply"| SQ
+    ARGO -->|"kubectl apply"| BACKSTAGE
+    ARGO -->|"kubectl apply"| RUNNERS
 ```
 
 ---
@@ -131,6 +154,10 @@ sequenceDiagram
 
     Dev->>GH: git push (code change)
     GH->>CI: trigger workflow
+    CI->>CI: QEMU + Docker Buildx
+    CI->>CI: SonarQube Scan (sonarqube-scan-action@v6)
+    CI->>CI: SonarQube Quality Gate check
+    Note over CI: Fails here if quality gate fails — no Docker build
     CI->>CI: QEMU + Docker Buildx
     CI->>CI: Build backend (linux/amd64+arm64)
     CI->>CI: Build frontend (linux/amd64+arm64)
@@ -200,6 +227,9 @@ graph LR
 | **Metrics** | Prometheus | — | 7d retention, K8s + app metrics |
 | **Dashboards** | Grafana | — | Metrics + Logs in one UI |
 | **Logs** | Loki + Promtail | 2.6 | Log aggregation, 7d retention |
+| **Code Quality** | SonarQube Community | 10.x | Static analysis + Quality Gate in CI |
+| **CI Runner** | Self-hosted GitHub Actions | — | K8s pod runner; access to internal services |
+| **IDP** | Backstage | 1.x | Service Catalog, TechDocs, Software Templates |
 | **App — Backend** | FastAPI + Python 3.14 | — | REST API, yfinance, asyncpg |
 | **App — Frontend** | React + Vite + TypeScript | — | SPA served by nginx |
 | **App — Database** | PostgreSQL | 16 | Persistent storage |
@@ -218,6 +248,9 @@ graph LR
 | **Image tag = git SHA** | Full traceability: know exactly which commit is deployed |
 | **Vault + ESO over plain K8s Secrets** | Secrets never in Git, centralized rotation, audit log |
 | **Loki over ELK** | 10× lower resource usage, integrates natively into Grafana |
+| **SonarQube Quality Gate in CI** | Blocks Docker build if code quality or security check fails — shift-left security |
+| **Self-hosted runner in K8s** | Cloud runners cannot reach `*.k8s.local`; runner inside cluster uses internal DNS |
+| **Backstage as IDP** | Single developer portal: service catalog, CI status, ArgoCD health, TechDocs per service |
 | **MetalLB L2** | Real LoadBalancer IPs on bare-metal without cloud provider |
 | **cert-manager + local CA** | HTTPS everywhere, realistic prod-like setup locally |
 | **local-path-provisioner** | PVCs work on bare-metal without NFS or cloud storage |
@@ -233,6 +266,8 @@ graph LR
 | https://argocd.k8s.local | ArgoCD UI | admin / *(see initial secret)* |
 | https://grafana.k8s.local | Grafana (Metrics + Logs) | admin / admin123 |
 | https://vault.k8s.local | HashiCorp Vault UI | Token: see `vault-init-keys` secret |
+| https://sonarqube.k8s.local | SonarQube Code Quality | admin / *(configured at init)* |
+| https://backstage.k8s.local | Backstage Developer Portal | — |
 | https://dashboard.k8s.local | Kubernetes Dashboard | Bearer token |
 
 ---

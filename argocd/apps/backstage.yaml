@@ -1,0 +1,121 @@
+apiVersion: argoproj.io/v1alpha1
+kind: Application
+metadata:
+  name: backstage
+  namespace: argocd
+  annotations:
+    argocd.argoproj.io/sync-wave: "3"
+  finalizers:
+    - resources-finalizer.argocd.argoproj.io
+spec:
+  project: platform
+  source:
+    repoURL: https://backstage.github.io/charts
+    chart: backstage
+    targetRevision: "1.*"
+    helm:
+      values: |
+        backstage:
+          image:
+            registry: ghcr.io
+            repository: backstage/backstage
+            tag: latest
+
+          # ------------------------------------------------------------------ #
+          # app-config.yaml — merged at runtime
+          # ------------------------------------------------------------------ #
+          appConfig:
+            app:
+              title: "Platform Engineering — FinPulse"
+              baseUrl: https://backstage.k8s.local
+
+            organization:
+              name: krasteki
+
+            backend:
+              baseUrl: https://backstage.k8s.local
+              listen:
+                port: 7007
+              database:
+                client: pg
+                connection:
+                  host: backstage-db
+                  port: 5432
+                  user: backstage
+                  password: ${POSTGRES_PASSWORD}
+                  database: backstage
+
+            catalog:
+              rules:
+                - allow: [Component, System, API, Resource, Location, Group, User]
+              locations:
+                - type: url
+                  target: https://github.com/krasteki/finpulse-app/blob/main/catalog-info.yaml
+                  rules:
+                    - allow: [Component]
+                - type: url
+                  target: https://github.com/krasteki/platform_eng/blob/main/catalog-info.yaml
+                  rules:
+                    - allow: [System, Resource]
+
+          # ------------------------------------------------------------------ #
+          # DB password from pre-created K8s Secret
+          # Пример: kubectl create secret generic backstage-db-secret -n backstage
+          #           --from-literal=POSTGRES_PASSWORD=<password>
+          # ------------------------------------------------------------------ #
+          extraEnvVars:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-db-secret
+                  key: POSTGRES_PASSWORD
+
+          # ------------------------------------------------------------------ #
+          # Schedule на control-plane нодовете (4GB RAM)
+          # ------------------------------------------------------------------ #
+          tolerations:
+            - key: node-role.kubernetes.io/control-plane
+              operator: Exists
+              effect: NoSchedule
+
+          nodeSelector:
+            node-role.kubernetes.io/control-plane: ""
+
+          resources:
+            requests:
+              cpu: 100m
+              memory: 512Mi
+            limits:
+              cpu: "1"
+              memory: 1Gi
+
+        # ------------------------------------------------------------------ #
+        # Disable built-in PostgreSQL — използваме собствен postgres:16
+        # ------------------------------------------------------------------ #
+        postgresql:
+          enabled: false
+
+        # ------------------------------------------------------------------ #
+        # Ingress — backstage.k8s.local с TLS от local-ca-issuer
+        # ------------------------------------------------------------------ #
+        ingress:
+          enabled: true
+          className: nginx
+          host: backstage.k8s.local
+          annotations:
+            cert-manager.io/cluster-issuer: local-ca-issuer
+          tls:
+            - secretName: backstage-tls
+              hosts:
+                - backstage.k8s.local
+
+  destination:
+    server: https://kubernetes.default.svc
+    namespace: backstage
+  syncPolicy:
+    automated:
+      prune: true
+      selfHeal: true
+    syncOptions:
+      - CreateNamespace=true
+      - ServerSideApply=true

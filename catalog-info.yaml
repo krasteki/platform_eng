@@ -1,0 +1,29 @@
+apiVersion: backstage.io/v1alpha1
+kind: System
+metadata:
+  name: platform-engineering
+  title: Platform Engineering Lab
+  description: Production-grade Kubernetes platform — IaC, GitOps, CI/CD, Secrets, Observability
+  tags:
+    - kubernetes
+    - platform
+    - gitops
+  annotations:
+    github.com/project-slug: krasteki/platform_eng
+spec:
+  owner: krasteki
+
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
+  name: kubernetes-cluster
+  title: Kubernetes Cluster (HA)
+  description: HA kubeadm cluster — 3 control-plane + 3 workers on Parallels ARM64 VMs
+  tags:
+    - kubernetes
+    - infrastructure
+spec:
+  type: kubernetes-cluster
+  owner: krasteki
+  system: platform-engineering

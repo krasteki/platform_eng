@@ -1,0 +1,86 @@
+---
+# PostgreSQL за Backstage — official postgres:16 image (multi-arch, arm64 compatible)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: backstage-db
+  namespace: backstage
+  labels:
+    app: backstage-db
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: backstage-db
+  template:
+    metadata:
+      labels:
+        app: backstage-db
+    spec:
+      tolerations:
+        - key: node-role.kubernetes.io/control-plane
+          operator: Exists
+          effect: NoSchedule
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      containers:
+        - name: postgres
+          image: postgres:16
+          env:
+            - name: POSTGRES_DB
+              value: backstage
+            - name: POSTGRES_USER
+              value: backstage
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-db-secret
+                  key: POSTGRES_PASSWORD
+          ports:
+            - containerPort: 5432
+          resources:
+            requests:
+              cpu: 100m
+              memory: 256Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+          readinessProbe:
+            exec:
+              command: ["pg_isready", "-U", "backstage"]
+            initialDelaySeconds: 10
+            periodSeconds: 5
+      volumes:
+        - name: data
+          persistentVolumeClaim:
+            claimName: backstage-db-pvc
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: backstage-db-pvc
+  namespace: backstage
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: backstage-db
+  namespace: backstage
+  labels:
+    app: backstage-db
+spec:
+  selector:
+    app: backstage-db
+  ports:
+    - port: 5432
+      targetPort: 5432
