@@ -56,9 +56,13 @@ spec:
 
         # ------------------------------------------------------------------ #
         # PostgreSQL — bundled subchart
+        # Bitnami е премахнал стари version тагове от Docker Hub (2024).
+        # Override image.tag=latest — единственият наличен named таг.
         # ------------------------------------------------------------------ #
         postgresql:
           enabled: true
+          image:
+            tag: latest
           resources:
             requests:
               cpu: 100m
