@@ -19,7 +19,7 @@ spec:
           image:
             registry: ghcr.io
             repository: backstage/backstage
-            tag: latest
+            tag: "1.28.4"
 
           # ------------------------------------------------------------------ #
           # app-config.yaml — merged at runtime
