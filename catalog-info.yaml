@@ -17,6 +17,43 @@ spec:
 apiVersion: backstage.io/v1alpha1
 kind: Resource
 metadata:
+  name: finpulse-cicd-pipeline
+  title: FinPulse CI/CD Pipeline
+  description: |
+    GitHub Actions CI → ArgoCD GitOps CD pipeline.
+    
+    Flow:
+    1. Push to main → GitHub Actions triggers
+    2. Lint + Unit Tests (pytest)
+    3. SonarQube scan + Quality Gate (must pass)
+    4. Docker build + push to ghcr.io/krasteki/finpulse-backend
+    5. ArgoCD detects new image tag → deploys to K8s (finpulse namespace)
+    6. Grafana/Prometheus monitors the deployment
+  tags:
+    - ci
+    - cd
+    - github-actions
+    - argocd
+    - gitops
+  annotations:
+    github.com/project-slug: krasteki/finpulse-app
+  links:
+    - url: https://github.com/krasteki/finpulse-app/actions
+      title: GitHub Actions Runs
+      icon: github
+    - url: https://github.com/krasteki/finpulse-app/blob/main/.github/workflows/ci.yaml
+      title: CI Workflow Definition
+      icon: github
+    - url: https://argocd.k8s.local/applications/finpulse
+      title: ArgoCD Deployment
+      icon: dashboard
+    - url: https://sonarqube.k8s.local/dashboard?id=finpulse
+      title: Quality Gate
+      icon: dashboard
+---
+apiVersion: backstage.io/v1alpha1
+kind: Resource
+metadata:
   name: kubernetes-cluster
   title: Kubernetes Cluster (HA)
   description: HA kubeadm cluster — 3 control-plane + 3 workers on Parallels ARM64 VMs
