@@ -28,6 +28,7 @@ spec:
             app:
               title: "Platform Engineering — FinPulse"
               baseUrl: https://backstage.k8s.local
+              packages: all
 
             organization:
               name: krasteki
