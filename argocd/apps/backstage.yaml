@@ -58,6 +58,13 @@ spec:
                   rules:
                     - allow: [System, Resource]
 
+            techdocs:
+              builder: local
+              generator:
+                runIn: local
+              publisher:
+                type: local
+
           # ------------------------------------------------------------------ #
           # DB password from pre-created K8s Secret
           # Пример: kubectl create secret generic backstage-db-secret -n backstage
