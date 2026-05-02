@@ -78,6 +78,19 @@ spec:
               processors:
                 broadcast: {}
 
+            kubernetes:
+              serviceLocatorMethod:
+                type: multiTenant
+              clusterLocatorMethods:
+                - type: config
+                  clusters:
+                    - url: https://kubernetes.default.svc
+                      name: k8s-local
+                      title: "K8s Local (HA)"
+                      authProvider: serviceAccount
+                      skipTLSVerify: true
+                      serviceAccountToken: ${K8S_SA_TOKEN}
+
           # ------------------------------------------------------------------ #
           # DB password from pre-created K8s Secret
           # Пример: kubectl create secret generic backstage-db-secret -n backstage
@@ -89,6 +102,11 @@ spec:
                 secretKeyRef:
                   name: backstage-db-secret
                   key: POSTGRES_PASSWORD
+            - name: K8S_SA_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: backstage-k8s-token
+                  key: token
 
           # ------------------------------------------------------------------ #
           # Schedule на control-plane нодовете (4GB RAM)

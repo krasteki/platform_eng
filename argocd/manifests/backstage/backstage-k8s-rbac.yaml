@@ -1,0 +1,64 @@
+# Backstage Kubernetes Plugin — RBAC
+# Gives the Backstage pod (default SA) cluster-wide read access so the
+# Kubernetes plugin can display workloads inside entities.
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: backstage-k8s-reader
+rules:
+  - apiGroups: [""]
+    resources:
+      - pods
+      - pods/log
+      - services
+      - endpoints
+      - namespaces
+      - nodes
+      - configmaps
+      - serviceaccounts
+      - replicationcontrollers
+      - persistentvolumes
+      - persistentvolumeclaims
+      - events
+    verbs: [get, list, watch]
+  - apiGroups: [apps]
+    resources:
+      - deployments
+      - replicasets
+      - statefulsets
+      - daemonsets
+    verbs: [get, list, watch]
+  - apiGroups: [networking.k8s.io]
+    resources:
+      - ingresses
+    verbs: [get, list, watch]
+  - apiGroups: [metrics.k8s.io]
+    resources:
+      - pods
+      - nodes
+    verbs: [get, list]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: backstage-k8s-reader
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: backstage-k8s-reader
+subjects:
+  - kind: ServiceAccount
+    name: default
+    namespace: backstage
+---
+# Long-lived ServiceAccount token for Backstage Kubernetes plugin.
+# Kubernetes auto-populates the 'token' field.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: backstage-k8s-token
+  namespace: backstage
+  annotations:
+    kubernetes.io/service-account.name: default
+type: kubernetes.io/service-account-token
