@@ -50,6 +50,13 @@ metadata:
     - url: https://sonarqube.k8s.local/dashboard?id=finpulse
       title: Quality Gate
       icon: dashboard
+spec:
+  type: cicd-pipeline
+  owner: krasteki
+  system: platform-engineering
+  dependsOn:
+    - resource:kubernetes-cluster
+
 ---
 apiVersion: backstage.io/v1alpha1
 kind: Resource
