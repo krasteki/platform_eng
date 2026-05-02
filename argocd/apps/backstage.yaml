@@ -19,7 +19,7 @@ spec:
           image:
             registry: ghcr.io
             repository: backstage/backstage
-            tag: "1.20.0"
+            tag: "1.28.4"
 
           # ------------------------------------------------------------------ #
           # app-config.yaml — merged at runtime
@@ -70,6 +70,10 @@ spec:
               providers: {}
 
             signInPage: guest
+
+            notifications:
+              processors:
+                broadcast: {}
 
           # ------------------------------------------------------------------ #
           # DB password from pre-created K8s Secret
