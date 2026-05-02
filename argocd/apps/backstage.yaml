@@ -65,6 +65,12 @@ spec:
               publisher:
                 type: local
 
+            auth:
+              environment: development
+              providers: {}
+
+            signInPage: guest
+
           # ------------------------------------------------------------------ #
           # DB password from pre-created K8s Secret
           # Пример: kubectl create secret generic backstage-db-secret -n backstage
