@@ -67,7 +67,9 @@ spec:
 
             auth:
               environment: development
-              providers: {}
+              providers:
+                guest:
+                  dangerouslyAllowOutsideDevelopment: true
 
             signInPage: guest
 
